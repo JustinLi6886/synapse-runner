@@ -1,7 +1,4 @@
-/**
- * NN config for constructor.
- * layers[0] = input size, layers[L] = output size, rest = hidden sizes.
- */
+/** layers[0] = input, layers[L] = output, rest = hidden. */
 export interface NeuralNetworkConfig {
   layers: number[]
   learningRate: number

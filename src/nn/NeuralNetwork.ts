@@ -1,15 +1,13 @@
 /**
- * Fully-connected MLP from scratch.
- * ReLU hidden layers, Sigmoid output layer.
- * weights[layer][out][in] = weight from prev neuron `in` to neuron `out` in next layer.
- * biases[layer][out] = bias for neuron `out` in next layer.
+ * MLP: ReLU hidden, sigmoid out.
+ * weights[layer][out][in] = weight from prev neuron in -> neuron out.
+ * biases[layer][out] = bias for that neuron.
  */
-
 import type { NeuralNetworkConfig } from './types'
-import { relu, reluDerivative, sigmoid, sigmoidDerivative } from './activations'
+import { relu, reluDerivative, sigmoid } from './activations'
 import { binaryCrossEntropyBatch } from './loss'
 
-/** Simple seeded RNG for reproducible init (mulberry32). */
+/** Seeded RNG (mulberry32) so init is reproducible. */
 function createSeededRandom(seed: number): () => number {
   return function next() {
     let t = (seed += 0x6d2b79f5)
@@ -20,15 +18,13 @@ function createSeededRandom(seed: number): () => number {
 }
 
 export class NeuralNetwork {
-  /** layers[0]=input size, layers[L]=output size. */
   private readonly layers: number[]
   private readonly learningRate: number
-  /** W[l][i][j] = weight from prev neuron j to neuron i in layer l (next layer). */
+  /** W[l][i][j] = weight from prev j to neuron i in next layer. */
   private weights: number[][][]
-  /** biases[l][i] = bias for neuron i in layer l (next layer). */
+  /** biases[l][i] for neuron i in next layer. */
   private biases: number[][]
-
-  /** Cached during forward for backprop: pre-activation z and activation a per layer. */
+  /** Cached z (pre-activation) and a per layer for backprop. */
   private cachedZ: number[][] = []
   private cachedA: number[][] = []
 
@@ -40,7 +36,7 @@ export class NeuralNetwork {
 
     this.weights = []
     this.biases = []
-    // He init for ReLU: std = sqrt(2/n_in). Last layer is sigmoid, use smaller scale.
+    // He init for ReLU (sqrt(2/n_in)); last layer sigmoid so smaller scale.
     for (let l = 0; l < layers.length - 1; l++) {
       const nIn = layers[l]
       const nOut = layers[l + 1]
@@ -60,11 +56,7 @@ export class NeuralNetwork {
     }
   }
 
-  /**
-   * Forward pass. Returns output activations (last layer).
-   * Caches z and a for each layer for backprop.
-   * a[0] = input, a[1..L] = hidden then output.
-   */
+  /** Forward pass; caches z and a per layer for backprop. */
   forward(input: number[]): number[] {
     const L = this.weights.length
     this.cachedA = [input]
@@ -72,7 +64,7 @@ export class NeuralNetwork {
 
     let a = input
     for (let l = 0; l < L; l++) {
-      // z[l] = W[l] @ a + b[l]; shape (nOut,)
+      // z = W @ a + b
       const nOut = this.weights[l].length
       const nIn = a.length
       const z: number[] = []
@@ -89,20 +81,16 @@ export class NeuralNetwork {
     return a
   }
 
-  /** Same as forward; for API clarity when we only care about prediction. */
   predict(input: number[]): number[] {
     return this.forward(input)
   }
 
-  /**
-   * Mini-batch SGD: one forward pass over batch, then backprop and update.
-   * targets[i] = desired output for inputs[i] (single output = one number per sample).
-   */
+  /** One forward over batch, backprop, then update. targets[i] = one number per sample. */
   trainBatch(inputs: number[][], targets: number[][]): { loss: number } {
     const N = inputs.length
     if (N === 0) return { loss: 0 }
 
-    // Forward all samples and compute average loss
+    // Forward batch, get average loss
     const predictions: number[] = []
     for (let i = 0; i < N; i++) {
       const out = this.forward(inputs[i])
@@ -113,9 +101,8 @@ export class NeuralNetwork {
       targets.map((t) => t[0])
     )
 
-    // Backprop: accumulate gradients over batch then average and update.
     const L = this.weights.length
-    // gradW[l][i][j], gradB[l][i]
+    // Accumulate gradients over batch
     const gradW: number[][][] = this.weights.map((W) =>
       W.map((row) => row.map(() => 0))
     )
@@ -123,20 +110,19 @@ export class NeuralNetwork {
 
     for (let i = 0; i < N; i++) {
       this.forward(inputs[i])
-      // dL/dz at output: (p - y) for BCE+sigmoid combined gradient
       const outA = this.cachedA[this.cachedA.length - 1]
       const y = targets[i][0]
       const p = outA[0]
-      // BCE + sigmoid: combined gradient at output z is (p - y)
+      // BCE+sigmoid: dL/dz at output = (p - y)
       const dLdzOut = p - y
 
-      // Backprop through layers (last to first). dLdz = gradient at z for current layer.
+      // Backprop last layer to first
       let dLdz: number[] = [dLdzOut]
       for (let l = L - 1; l >= 0; l--) {
         const aPrev = this.cachedA[l]
         const nOut = this.weights[l].length
         const nIn = aPrev.length
-        // dL/dW[l] += dLdz (nOut,) @ aPrev^T (nIn,) -> (nOut, nIn)
+        // dL/dW += dLdz @ aPrev^T
         for (let i = 0; i < nOut; i++) {
           for (let j = 0; j < nIn; j++) {
             gradW[l][i][j] += dLdz[i] * aPrev[j]
@@ -144,20 +130,20 @@ export class NeuralNetwork {
           gradB[l][i] += dLdz[i]
         }
         if (l === 0) break
-        // dL/da_prev = W[l]^T @ dLdz  (nIn,)
+        // dL/da_prev = W^T @ dLdz
         const daPrev: number[] = []
         for (let j = 0; j < nIn; j++) {
           let sum = 0
           for (let i = 0; i < nOut; i++) sum += this.weights[l][i][j] * dLdz[i]
           daPrev[j] = sum
         }
-        // dL/dz_prev = dL/da_prev * relu'(z_prev)
+        // dL/dz_prev = dL/da_prev * relu'(z)
         const zPrev = this.cachedZ[l - 1]
         dLdz = daPrev.map((v, j) => v * reluDerivative(zPrev[j]))
       }
     }
 
-    // Average gradients and update weights
+    // Average grads, update
     for (let l = 0; l < L; l++) {
       const nOut = this.weights[l].length
       const nIn = this.weights[l][0].length
@@ -178,5 +164,9 @@ export class NeuralNetwork {
 
   getBiases(): number[][] {
     return this.biases.map((b) => [...b])
+  }
+
+  getLayerSizes(): number[] {
+    return [...this.layers]
   }
 }

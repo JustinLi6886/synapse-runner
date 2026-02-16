@@ -1,9 +1,4 @@
-/**
- * Binary cross-entropy loss for a single output.
- * L = -[y*log(p) + (1-y)*log(1-p)]
- * Clamp p to avoid log(0).
- */
-
+/** BCE for one output; clamp p so we don't hit log(0). */
 const EPS = 1e-7
 
 export function binaryCrossEntropy(p: number, y: number): number {
@@ -11,10 +6,7 @@ export function binaryCrossEntropy(p: number, y: number): number {
   return -(y * Math.log(pc) + (1 - y) * Math.log(1 - pc))
 }
 
-/**
- * Average BCE over a batch of single outputs.
- * predictions[i], targets[i] are scalars.
- */
+/** Average BCE over batch (each prediction/target is a scalar). */
 export function binaryCrossEntropyBatch(
   predictions: number[],
   targets: number[]
@@ -26,12 +18,7 @@ export function binaryCrossEntropyBatch(
   return sum / predictions.length
 }
 
-/**
- * Derivative of BCE w.r.t. prediction p (for one sample).
- * dL/dp = (p - y) / (p*(1-p)); with sigmoid output the combined gradient
- * (dL/dz) is just (p - y) after applying chain rule with sigmoid'.
- * We use (p - y) as the gradient passed to the output layer.
- */
+/** dL/dp for one sample; with sigmoid out the combined dL/dz is (p - y). */
 export function binaryCrossEntropyDerivative(p: number, y: number): number {
   const pc = Math.max(EPS, Math.min(1 - EPS, p))
   return (pc - y) / (pc * (1 - pc))

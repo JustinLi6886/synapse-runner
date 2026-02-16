@@ -1,8 +1,4 @@
-/**
- * XOR sanity check: train a small MLP on XOR, log loss every 100 steps, print final predictions.
- * Run from browser console: runXorDemo()
- * (Attached to window when this module is loaded.)
- */
+/** Train on XOR, log loss every 100 steps. In dev run runXorDemo() from console. */
 
 import { NeuralNetwork } from './NeuralNetwork'
 
@@ -33,9 +29,4 @@ export function runXorDemo(): void {
     const expected = XOR_TARGETS[i][0]
     console.log(`  [${XOR_INPUTS[i].join(', ')}] -> ${out.toFixed(4)} (expected ${expected})`)
   }
-}
-
-// Expose to browser console when running in app
-if (typeof window !== 'undefined') {
-  (window as unknown as { runXorDemo: () => void }).runXorDemo = runXorDemo
 }
