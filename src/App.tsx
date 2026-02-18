@@ -1,4 +1,5 @@
 import './App.css'
+import { GameView } from './game/GameView'
 
 function App() {
   return (
@@ -7,7 +8,7 @@ function App() {
         neural network
       </div>
       <div className="panel right-panel">
-        game
+        <GameView />
       </div>
     </div>
   )
