@@ -1,5 +1,3 @@
-/** Train on XOR, log loss every 100 steps. In dev run runXorDemo() from console. */
-
 import { NeuralNetwork } from './NeuralNetwork'
 
 const XOR_INPUTS: number[][] = [[0, 0], [0, 1], [1, 0], [1, 1]]

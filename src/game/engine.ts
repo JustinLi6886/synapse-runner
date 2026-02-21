@@ -1,185 +1,216 @@
-import type { GameState, Obstacle, Cloud } from './types'
-import { GAME_CONFIG } from './types'
+import type { GameState, Obstacle, Action, StepResult } from "./types"
+import { GAME_CONFIG } from "./config"
 
 const {
-  groundY: GROUND_Y,
+  gravity,
+  jumpVelocity,
   playerX: PLAYER_X,
-  playerWidth: PLAYER_WIDTH,
-  playerHeight: PLAYER_HEIGHT,
-  obstacleMinWidth,
-  obstacleMaxWidth,
-  obstacleMinHeight,
-  obstacleMaxHeight,
-  hitboxPadding,
-  GRAVITY,
-  INITIAL_SPEED,
-  MAX_SPEED,
-  INITIAL_JUMP_VELOCITY,
-  ACCELERATION,
-  CLOUD_FREQUENCY,
-  MAX_CLOUDS,
-  SPAWN_INTERVAL_SEC,
+  playerW: PLAYER_W,
+  playerHitboxH,
+  playerHitboxBottomOffset,
+  spawnGapPxMin,
+  spawnGapPxMax,
+  obstacleWMin,
+  obstacleWMax,
+  obstacleHMin,
+  obstacleHMax,
+  baseMovePx,
+  speedStart,
+  speedMax,
+  distancePerSecond,
 } = GAME_CONFIG
 
-export function createInitialState(): GameState {
+function nextRng(state: number): [number, number] {
+  const s = (state + 0x6d2b79f5) | 0
+  let t = s
+  t = Math.imul(t ^ (t >>> 15), t | 1)
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+  return [((t ^ (t >>> 14)) >>> 0) / 4294967296, s]
+}
+
+function rngInRange(state: number, min: number, max: number): [number, number] {
+  const [val, next] = nextRng(state)
+  return [min + val * (max - min), next]
+}
+
+export function createGameState(viewWidth: number, seed: number = 42): GameState {
+  let rngState = seed
+  let gap: number
+  ;[gap, rngState] = rngInRange(rngState, spawnGapPxMin, spawnGapPxMax)
+
   return {
-    playerY: GROUND_Y - PLAYER_HEIGHT,
+    seed,
+    viewWidth,
+    playerY: 0,
     playerVy: 0,
     obstacles: [],
-    clouds: [],
-    clearedCount: 0,
-    score: 0,
+    spawnProgressPx: 0,
+    nextSpawnGapPx: gap,
+    distance: 0,
+    pixelsTraveled: 0,
     gameOver: false,
-    gameSpeed: INITIAL_SPEED,
-    spawnTimer: 0,
-    cloudTimer: 0,
-    time: 0,
+    gameSpeed: speedStart,
+    nextObstacleId: 0,
+    rngState,
   }
 }
 
-function groundY(): number {
-  return GROUND_Y
-}
-
-function spawnObstacle(canvasWidth: number): Obstacle {
-  const width =
-    obstacleMinWidth +
-    Math.random() * (obstacleMaxWidth - obstacleMinWidth)
-  const height =
-    obstacleMinHeight +
-    Math.random() * (obstacleMaxHeight - obstacleMinHeight)
-  return {
-    x: canvasWidth + width,
-    width,
-    height,
-  }
-}
-
-function spawnCloud(canvasWidth: number, groundY: number): Cloud {
-  return {
-    x: canvasWidth + 20 + Math.random() * 40,
-    y: Math.random() * (groundY - 40),
-    r: 12 + Math.random() * 16,
-  }
+export function reset(viewWidth: number, seed?: number): GameState {
+  return createGameState(viewWidth, seed)
 }
 
 function checkCollision(state: GameState): boolean {
-  const g = groundY()
-  const p = hitboxPadding
-  const pLeft = PLAYER_X + p
-  const pRight = PLAYER_X + PLAYER_WIDTH - p
-  const pTop = state.playerY + p
-  const pBottom = state.playerY + PLAYER_HEIGHT - p
+  const playerLeft = PLAYER_X
+  const playerRight = PLAYER_X + PLAYER_W
+  const playerBottom = state.playerY + playerHitboxBottomOffset
+  const playerTop = playerBottom + playerHitboxH
 
+  const EPS = 1
   for (const o of state.obstacles) {
-    const oTop = g - o.height
-    const oLeft = o.x + p
-    const oRight = o.x + o.width - p
-    const oBottom = g - p
-    if (
-      pRight > oLeft &&
-      pLeft < oRight &&
-      pBottom > oTop &&
-      pTop < oBottom
-    ) {
-      return true
-    }
+    const obsLeft = o.x
+    const obsRight = o.x + o.width
+    const obsBottom = 0
+    const obsTop = o.height
+
+    const overlapX = (playerRight + EPS) > obsLeft && playerLeft < (obsRight + EPS)
+    const overlapY = playerTop > obsBottom && playerBottom < obsTop
+
+    if (overlapX && overlapY) return true
   }
+
   return false
 }
 
-/** Per-frame update (60 FPS). dt in seconds for spawn/timers only. */
-export function step(
-  state: GameState,
-  dt: number,
-  jumpPressed: boolean,
-  canvasWidth: number,
-  _canvasHeight: number
-): GameState {
-  if (state.gameOver) return state
-
-  const g = groundY()
-  let { playerY, playerVy, obstacles, clouds, clearedCount, gameSpeed, spawnTimer, cloudTimer, time } =
-    state
-
-  time += dt
-  spawnTimer += dt
-  if (spawnTimer >= SPAWN_INTERVAL_SEC) {
-    spawnTimer = 0
-    obstacles = [...obstacles, spawnObstacle(canvasWidth)]
-    if (import.meta.env.DEV) console.log('[game] spawn obstacle', obstacles.length)
+export function step(prev: GameState, action: Action, dt: number): StepResult {
+  if (prev.gameOver) {
+    return {
+      state: prev,
+      reward: 0,
+      done: true,
+      info: { obstaclePassed: false, obstaclesPassed: 0, collision: false, score: getScore(prev) },
+    }
   }
 
-  cloudTimer += dt
-  if (clouds.length < MAX_CLOUDS && cloudTimer >= CLOUD_FREQUENCY) {
-    cloudTimer = 0
-    clouds = [...clouds, spawnCloud(canvasWidth, g)]
-  }
+  const viewWidth = prev.viewWidth
+  let { playerY, playerVy, obstacles, spawnProgressPx, nextSpawnGapPx, distance, pixelsTraveled, nextObstacleId, rngState } = prev
 
-  const movePx = gameSpeed
-  const moved = obstacles.map((o) => ({ ...o, x: o.x - movePx }))
-  const justCleared = moved.filter((o) => o.x + o.width <= 0).length
-  clearedCount += justCleared
-  obstacles = moved.filter((o) => o.x + o.width > 0)
-  clouds = clouds.map((c) => ({ ...c, x: c.x - movePx * 0.3 })).filter((c) => c.x + c.r > 0)
+  const score = Math.floor(distance)
+  const steps = Math.floor(score / 75)
+  const gameSpeed = Math.min(speedMax, speedStart + steps * 0.5)
+  const movePx = baseMovePx * gameSpeed
 
-  const groundTop = g - PLAYER_HEIGHT
-  if (playerY >= groundTop && jumpPressed) {
-    playerVy = -INITIAL_JUMP_VELOCITY
+  distance += distancePerSecond * dt * gameSpeed
+
+  // g ∝ speed², v ∝ speed → constant jump height, airtime ∝ 1/speed
+  const g = gravity * gameSpeed * gameSpeed
+  const jumpV = jumpVelocity * gameSpeed
+
+  if (playerY <= 0 && action === 1) {
+    playerVy = jumpV
   }
-  playerVy += GRAVITY
+  playerVy -= g
   playerY += playerVy
-  if (playerY > groundTop) {
-    playerY = groundTop
+  if (playerY < 0) {
+    playerY = 0
     playerVy = 0
   }
 
-  gameSpeed = Math.min(MAX_SPEED, gameSpeed + ACCELERATION)
+  pixelsTraveled += movePx
 
-  const next = {
-    ...state,
+  let obstaclesPassed = 0
+  for (const o of obstacles) {
+    const rightEdge = o.x + o.width
+    if (rightEdge > PLAYER_X && rightEdge - movePx <= PLAYER_X) {
+      obstaclesPassed++
+    }
+  }
+
+  spawnProgressPx += movePx
+  while (spawnProgressPx >= nextSpawnGapPx) {
+    spawnProgressPx -= nextSpawnGapPx
+    let width: number, height: number
+    ;[width, rngState] = rngInRange(rngState, obstacleWMin, obstacleWMax)
+    ;[height, rngState] = rngInRange(rngState, obstacleHMin, obstacleHMax)
+    const obstacle: Obstacle = {
+      id: nextObstacleId,
+      x: viewWidth,
+      width,
+      height,
+    }
+    nextObstacleId += 1
+    obstacles = [...obstacles, obstacle]
+    ;[nextSpawnGapPx, rngState] = rngInRange(rngState, spawnGapPxMin, spawnGapPxMax)
+  }
+
+  obstacles = obstacles
+    .map((o) => ({ ...o, x: o.x - movePx }))
+    .filter((o) => o.x + o.width > 0)
+
+  const next: GameState = {
+    ...prev,
     playerY,
     playerVy,
     obstacles,
-    clouds,
-    clearedCount,
+    spawnProgressPx,
+    nextSpawnGapPx,
+    distance,
+    pixelsTraveled,
     gameSpeed,
-    spawnTimer,
-    cloudTimer,
-    time,
+    nextObstacleId,
+    rngState,
   }
-  next.score = next.clearedCount
+
+  let reward = 0.01 + obstaclesPassed * 1.0
+  let collision = false
+
   if (checkCollision(next)) {
     next.gameOver = true
+    reward = -5
+    collision = true
   }
-  return next
+
+  return {
+    state: next,
+    reward,
+    done: next.gameOver,
+    info: {
+      obstaclePassed: obstaclesPassed > 0,
+      obstaclesPassed,
+      collision,
+      score: getScore(next),
+    },
+  }
 }
 
-/** Normalized vector for future NN input. */
-export function getInputVector(
-  state: GameState,
-  canvasWidth: number,
-  canvasHeight: number
-): number[] {
-  const next = state.obstacles
-    .filter((o) => o.x > PLAYER_X)
-    .sort((a, b) => a.x - b.x)[0]
+// Returns [distToObs, obsWidth, obsHeight, playerY, playerVy, gameSpeed], all normalized to [0,1].
+export function getObservation(state: GameState): number[] {
+  const nextObs = state.obstacles
+    .filter((o) => o.x + o.width > PLAYER_X)
+    .sort((a, b) => a.x - b.x)[0] ?? null
 
-  const distToNext = next ? (next.x - PLAYER_X) / canvasWidth : 1
-  const obstacleHeight = next ? next.height / canvasHeight : 0
-  const obstacleWidth = next ? next.width / canvasWidth : 0
-  const heightAboveGround = Math.max(0, GROUND_Y - state.playerY - PLAYER_HEIGHT)
-  const maxJumpHeight = (INITIAL_JUMP_VELOCITY * INITIAL_JUMP_VELOCITY) / (2 * GRAVITY)
-  const playerYNorm = heightAboveGround / maxJumpHeight
-  const playerVyNorm = Math.max(-1, Math.min(1, -state.playerVy / INITIAL_JUMP_VELOCITY))
-  const speedNorm = state.gameSpeed / MAX_SPEED
+  const maxDistance = Math.max(1, state.viewWidth - PLAYER_X)
+  const dist = nextObs ? Math.max(0, nextObs.x - PLAYER_X) : maxDistance
+  const width = nextObs?.width ?? 0
+  const height = nextObs?.height ?? 0
+
+  const maxJumpHeight = (jumpVelocity * jumpVelocity) / (2 * gravity)
+  const maxVel = jumpVelocity * Math.max(1, state.gameSpeed)
+  const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
   return [
-    distToNext,
-    obstacleHeight,
-    obstacleWidth,
-    playerYNorm,
-    playerVyNorm,
-    speedNorm,
+    clamp01(dist / maxDistance),
+    clamp01(width / obstacleWMax),
+    clamp01(height / obstacleHMax),
+    clamp01(state.playerY / maxJumpHeight),
+    clamp01((state.playerVy + maxVel) / (2 * maxVel)),
+    clamp01(state.gameSpeed / speedMax),
   ]
+}
+
+export function isDone(state: GameState): boolean {
+  return state.gameOver
+}
+
+export function getScore(state: GameState): number {
+  return Math.floor(state.distance)
 }
