@@ -1,5 +1,5 @@
 import type { NeuralNetworkConfig } from './types'
-import { relu, reluDerivative, sigmoid } from './activations'
+import { leakyRelu, leakyReluDerivative, sigmoid } from './activations'
 import { binaryCrossEntropyBatch } from './loss'
 
 // weights[layer][out][in], biases[layer][out]
@@ -64,7 +64,7 @@ export class NeuralNetwork {
       }
       this.cachedZ.push(z)
       const isLast = l === L - 1
-      a = z.map((v) => (isLast ? sigmoid(v) : relu(v)))
+      a = z.map((v) => (isLast ? sigmoid(v) : leakyRelu(v)))
       this.cachedA.push(a)
     }
     return a
@@ -119,7 +119,7 @@ export class NeuralNetwork {
           daPrev[j] = sum
         }
         const zPrev = this.cachedZ[l - 1]
-        dLdz = daPrev.map((v, j) => v * reluDerivative(zPrev[j]))
+        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(zPrev[j]))
       }
     }
 
@@ -137,6 +137,83 @@ export class NeuralNetwork {
     return { loss }
   }
 
+  /**
+   * Policy gradient (REINFORCE) update.
+   * inputs[i] = obs, actions[i] in {0,1}, returns[i] = G_t (discounted return).
+   * loss = -sum(G_t * logProb_t). Gradient at output: (p - action) * G.
+   */
+  policyGradientUpdate(
+    inputs: number[][],
+    actions: number[],
+    returns: number[],
+    opts?: { clipGrad?: number; lr?: number }
+  ): void {
+    const N = inputs.length
+    if (N === 0) return
+    const clipGrad = opts?.clipGrad ?? 1
+    const lr = opts?.lr ?? this.learningRate
+
+    const L = this.weights.length
+    const gradW: number[][][] = this.weights.map((W) =>
+      W.map((row) => row.map(() => 0))
+    )
+    const gradB: number[][] = this.biases.map((b) => b.map(() => 0))
+
+    for (let i = 0; i < N; i++) {
+      this.forward(inputs[i])
+      const outA = this.cachedA[this.cachedA.length - 1]
+      const action = actions[i]
+      const G = returns[i]
+      const p = outA[0]
+      // dL/dz = (p - action) * G for REINFORCE
+      let dLdz: number[] = [(p - action) * G]
+      for (let l = L - 1; l >= 0; l--) {
+        const aPrev = this.cachedA[l]
+        const nOut = this.weights[l].length
+        const nIn = aPrev.length
+        for (let o = 0; o < nOut; o++) {
+          for (let j = 0; j < nIn; j++) {
+            gradW[l][o][j] += dLdz[o] * aPrev[j]
+          }
+          gradB[l][o] += dLdz[o]
+        }
+        if (l === 0) break
+        const daPrev: number[] = []
+        for (let j = 0; j < nIn; j++) {
+          let sum = 0
+          for (let o = 0; o < nOut; o++) sum += this.weights[l][o][j] * dLdz[o]
+          daPrev[j] = sum
+        }
+        const zPrev = this.cachedZ[l - 1]
+        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(zPrev[j]))
+      }
+    }
+
+    let totalSq = 0
+    for (let l = 0; l < L; l++) {
+      for (let i = 0; i < gradW[l].length; i++) {
+        for (let j = 0; j < gradW[l][i].length; j++) {
+          totalSq += gradW[l][i][j] * gradW[l][i][j]
+        }
+      }
+      for (let i = 0; i < gradB[l].length; i++) {
+        totalSq += gradB[l][i] * gradB[l][i]
+      }
+    }
+    const scale = clipGrad > 0 && totalSq > clipGrad * clipGrad ? clipGrad / Math.sqrt(totalSq) : 1
+
+    for (let l = 0; l < L; l++) {
+      const nOut = this.weights[l].length
+      const nIn = this.weights[l][0].length
+      for (let i = 0; i < nOut; i++) {
+        this.biases[l][i] -= (lr * gradB[l][i] * scale) / N
+        for (let j = 0; j < nIn; j++) {
+          this.weights[l][i][j] -= (lr * gradW[l][i][j] * scale) / N
+        }
+      }
+    }
+  }
+
   getWeights(): number[][][] {
     return this.weights.map((W) => W.map((row) => [...row]))
   }
@@ -147,5 +224,48 @@ export class NeuralNetwork {
 
   getLayerSizes(): number[] {
     return [...this.layers]
+  }
+
+  exportWeights(): string {
+    return JSON.stringify({
+      layers: this.layers,
+      learningRate: this.learningRate,
+      weights: this.weights,
+      biases: this.biases,
+    })
+  }
+
+  loadWeights(weights: number[][][], biases: number[][]): void {
+    if (
+      weights.length !== this.weights.length ||
+      biases.length !== this.biases.length
+    )
+      throw new Error("Weight/biases shape mismatch")
+    for (let l = 0; l < weights.length; l++) {
+      for (let i = 0; i < weights[l].length; i++) {
+        for (let j = 0; j < weights[l][i].length; j++) {
+          this.weights[l][i][j] = weights[l][i][j]
+        }
+      }
+      for (let i = 0; i < biases[l].length; i++) {
+        this.biases[l][i] = biases[l][i]
+      }
+    }
+  }
+
+  static fromWeights(json: string): NeuralNetwork {
+    const data = JSON.parse(json) as {
+      layers: number[]
+      learningRate: number
+      weights: number[][][]
+      biases: number[][]
+    }
+    const nn = new NeuralNetwork({
+      layers: data.layers,
+      learningRate: data.learningRate,
+      seed: 0,
+    })
+    nn.loadWeights(data.weights, data.biases)
+    return nn
   }
 }

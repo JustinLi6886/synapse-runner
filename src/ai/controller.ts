@@ -2,6 +2,7 @@ import type { GameState, Action } from "@/game/types"
 
 export interface Controller {
   decideAction(state: GameState, obs: number[]): Action
+  getLastLogProb?(): number
   onEpisodeEnd?(stats: { score: number; steps: number }): void
   reset?(): void
 }
@@ -41,7 +42,30 @@ export class ModelController implements Controller {
 
   decideAction(_state: GameState, obs: number[]): Action {
     const pJump = this.predict(obs)
-    return pJump > this.threshold ? 1 : 0
+    return pJump >= this.threshold ? 1 : 0
+  }
+
+  reset(): void {}
+}
+
+/** Samples action from Bernoulli(pJump) for RL training. Call getLastLogProb() after decideAction. */
+export class SamplingModelController implements Controller {
+  private predict: (obs: number[]) => number
+  private lastLogProb = 0
+
+  constructor(predict: (obs: number[]) => number) {
+    this.predict = predict
+  }
+
+  getLastLogProb(): number {
+    return this.lastLogProb
+  }
+
+  decideAction(_state: GameState, obs: number[]): Action {
+    const pJump = Math.max(1e-8, Math.min(1 - 1e-8, this.predict(obs)))
+    const action: Action = Math.random() < pJump ? 1 : 0
+    this.lastLogProb = action * Math.log(pJump) + (1 - action) * Math.log(1 - pJump)
+    return action
   }
 
   reset(): void {}

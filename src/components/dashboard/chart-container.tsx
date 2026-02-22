@@ -8,19 +8,23 @@ import {
   Tooltip,
 } from "recharts"
 
+import { InfoTooltip } from "./info-tooltip"
+
 interface ChartContainerProps {
   data: { name: string; value: number }[]
   label: string
   color?: string
+  tooltip?: string
 }
 
-export function ChartContainer({ data, label, color = "var(--primary)" }: ChartContainerProps) {
+export function ChartContainer({ data, label, color = "var(--primary)", tooltip }: ChartContainerProps) {
   return (
     <div className="flex flex-col gap-2" role="img" aria-label={`${label} chart`}>
-      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
         {label}
+        {tooltip && <InfoTooltip description={tooltip} />}
       </span>
-      <div className="h-[140px] w-full">
+      <div className="h-[180px] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />

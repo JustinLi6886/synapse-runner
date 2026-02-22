@@ -160,7 +160,7 @@ export function step(prev: GameState, action: Action, dt: number): StepResult {
     rngState,
   }
 
-  let reward = 0.01 + obstaclesPassed * 1.0
+  let reward = 0.01 + obstaclesPassed * 2.0
   let collision = false
 
   if (checkCollision(next)) {

@@ -1,6 +1,6 @@
 import { useMemo, useEffect } from "react"
 import { HumanController } from "@/ai/controller"
-import { useGameRunner, type UseGameRunnerOptions } from "./useGameRunner"
+import { useGameRunner } from "./useGameRunner"
 
 export interface UseHumanRunnerOptions {
   paused: boolean

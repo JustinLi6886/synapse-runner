@@ -11,9 +11,12 @@ export interface UseGameRunnerOptions {
   paused: boolean
   viewWidth?: number
   started?: boolean
+  simSpeed?: number
+  onStep?: (obs: number[], action: Action, state: GameState) => void
+  onStepComplete?: (obs: number[], action: Action, logProb: number, reward: number) => void
 }
 
-export function useGameRunner({ controller, paused, viewWidth = 800, started = true }: UseGameRunnerOptions) {
+export function useGameRunner({ controller, paused, viewWidth = 800, started = true, simSpeed = 1, onStep, onStepComplete }: UseGameRunnerOptions) {
   const [state, setState] = useState<GameState | null>(null)
   const [bestScore, setBestScore] = useState(0)
   const stateRef = useRef<GameState | null>(null)
@@ -24,13 +27,19 @@ export function useGameRunner({ controller, paused, viewWidth = 800, started = t
   const controllerRef = useRef(controller)
   const stepCountRef = useRef(0)
   const episodeEndFiredRef = useRef(false)
+  const onStepRef = useRef(onStep)
+  const onStepCompleteRef = useRef(onStepComplete)
+  const simSpeedRef = useRef(simSpeed)
 
   useEffect(() => { viewWidthRef.current = viewWidth }, [viewWidth])
+  useEffect(() => { simSpeedRef.current = simSpeed }, [simSpeed])
   useEffect(() => { controllerRef.current = controller }, [controller])
+  useEffect(() => { onStepRef.current = onStep }, [onStep])
+  useEffect(() => { onStepCompleteRef.current = onStepComplete }, [onStepComplete])
 
-  const reset = useCallback(() => {
+  const reset = useCallback((seed?: number) => {
     const w = viewWidthRef.current
-    const next = createGameState(w, Date.now())
+    const next = createGameState(w, seed ?? Date.now())
     stateRef.current = next
     setState(next)
     accumRef.current = 0
@@ -70,14 +79,17 @@ export function useGameRunner({ controller, paused, viewWidth = 800, started = t
 
       const dtMs = lastTimeRef.current ? Math.min(now - lastTimeRef.current, 50) : 0
       lastTimeRef.current = now
-      const dtSec = dtMs / 1000
-      accumRef.current = Math.min(accumRef.current + dtSec, MAX_ACCUM)
-
-      const obs = getObservation(current)
-      const action: Action = controllerRef.current.decideAction(current, obs)
+      const dtSec = (dtMs / 1000) * simSpeedRef.current
+      accumRef.current = Math.min(accumRef.current + dtSec, MAX_ACCUM * Math.max(1, simSpeedRef.current))
 
       while (accumRef.current >= FIXED_DT) {
+        const obs = getObservation(current)
+        const action: Action = controllerRef.current.decideAction(current, obs)
+        const logProb = controllerRef.current.getLastLogProb?.() ?? 0
+        onStepRef.current?.(obs, action, current)
+
         const result = step(current, action, FIXED_DT)
+        onStepCompleteRef.current?.(obs, action, logProb, result.reward)
         current = result.state
         stateRef.current = current
         accumRef.current -= FIXED_DT

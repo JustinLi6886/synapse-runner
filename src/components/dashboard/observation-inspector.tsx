@@ -1,7 +1,6 @@
 import { useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { mockState } from "@/lib/mock-data"
 
 export interface ObservationFeature {
   label: string
@@ -10,16 +9,26 @@ export interface ObservationFeature {
   displayValue?: string
 }
 
+const DEFAULT_OBSERVATIONS: ObservationFeature[] = [
+  { label: "Distance to Obstacle", value: 1, max: 1, displayValue: "0" },
+  { label: "Obstacle Width", value: 0, max: 1, displayValue: "0" },
+  { label: "Obstacle Height", value: 0, max: 1, displayValue: "0" },
+  { label: "Player Y", value: 0, max: 1, displayValue: "0.0" },
+  { label: "Player Velocity", value: 0.5, max: 1, displayValue: "0.00" },
+  { label: "Game Speed", value: 0.2, max: 1, displayValue: "1.00" },
+]
+
 interface ObservationInspectorProps {
   observations?: ObservationFeature[]
+  className?: string
 }
 
-export function ObservationInspector({ observations: observationsOverride }: ObservationInspectorProps = {}) {
+export function ObservationInspector({ observations: observationsOverride, className }: ObservationInspectorProps = {}) {
   const [isOpen, setIsOpen] = useState(true)
-  const observations: ObservationFeature[] = observationsOverride ?? mockState.observations
+  const observations: ObservationFeature[] = observationsOverride ?? DEFAULT_OBSERVATIONS
 
   return (
-    <div className="rounded-xl bg-card border border-border">
+    <div className={cn("rounded-xl bg-card border border-border", className)}>
       <button
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}

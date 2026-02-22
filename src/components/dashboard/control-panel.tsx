@@ -1,14 +1,18 @@
 import { DashboardCard } from "./dashboard-card"
 import { ModeSelector } from "./mode-selector"
 import { TrainingControls } from "./training-controls"
-import { MetricTile } from "./metric-tile"
-import { mockState } from "@/lib/mock-data"
 import type { HumanLiveMetrics } from "./game-panel"
+import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
+import type { PolicyGradientState, PolicyGradientActions } from "@/hooks/usePolicyGradient"
 
 interface ControlPanelProps {
   activeMode: string
   onModeChange: (mode: string) => void
   liveMetrics?: HumanLiveMetrics | null
+  imitation?: [ImitationState, ImitationActions]
+  policyGradient?: [PolicyGradientState, PolicyGradientActions]
+  isHeadless?: boolean
+  onPolicyGradientEvaluate?: () => void
 }
 
 const modeLabels: Record<string, string> = {
@@ -18,10 +22,7 @@ const modeLabels: Record<string, string> = {
   evolution: "Evolution Strategy",
 }
 
-export function ControlPanel({ activeMode, onModeChange, liveMetrics }: ControlPanelProps) {
-  const { metrics } = mockState
-  const m = activeMode === "human" && liveMetrics ? liveMetrics : metrics
-
+export function ControlPanel({ activeMode, onModeChange, liveMetrics, imitation, policyGradient, isHeadless, onPolicyGradientEvaluate }: ControlPanelProps) {
   return (
     <nav className="flex flex-col gap-4" aria-label="AI Lab controls">
       <DashboardCard title="Mode">
@@ -29,21 +30,8 @@ export function ControlPanel({ activeMode, onModeChange, liveMetrics }: ControlP
       </DashboardCard>
 
       <DashboardCard title={activeMode === "human" ? "Human Agent" : `Training -- ${modeLabels[activeMode]}`}>
-        <TrainingControls activeMode={activeMode} scoreHistory={liveMetrics?.scoreHistory} />
+        <TrainingControls activeMode={activeMode} scoreHistory={liveMetrics?.scoreHistory} imitation={imitation} policyGradient={policyGradient} isHeadless={isHeadless} onPolicyGradientEvaluate={onPolicyGradientEvaluate} />
       </DashboardCard>
-
-      {activeMode !== "human" && (
-        <DashboardCard title="Live Metrics">
-          <div className="grid grid-cols-3 gap-3">
-            <MetricTile label="Score" value={m.score} highlight />
-            <MetricTile label="Best" value={m.bestScore} />
-            <MetricTile label="Episode" value={m.episode} />
-            <MetricTile label="Speed" value={m.speed} unit="x" />
-            <MetricTile label="Jump P" value={m.jumpProb} />
-            <MetricTile label="Action" value={m.action} />
-          </div>
-        </DashboardCard>
-      )}
     </nav>
   )
 }

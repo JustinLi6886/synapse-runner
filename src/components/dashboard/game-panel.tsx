@@ -1,12 +1,17 @@
-import { useRef, useState, useEffect } from "react"
+import { useRef, useState, useEffect, useMemo, useCallback } from "react"
 import { Monitor } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { mockState } from "@/lib/mock-data"
-import { useHumanRunner } from "@/hooks/useHumanRunner"
+import { useGameRunner } from "@/hooks/useGameRunner"
+import { HumanController, ModelController, SamplingModelController } from "@/ai/controller"
 import { GAME_CONFIG } from "@/game/config"
 import { getObservation } from "@/game/engine"
 import { ObservationInspector } from "./observation-inspector"
-import { MetricTile } from "./metric-tile"
+import { ChartContainer } from "./chart-container"
+import { InfoTooltip } from "./info-tooltip"
+import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
+import type { PolicyGradientState, PolicyGradientActions } from "@/hooks/usePolicyGradient"
+import type { Action } from "@/game/types"
 
 export interface HumanLiveMetrics {
   score: number
@@ -24,6 +29,8 @@ interface GamePanelProps {
   activeMode: string
   isHeadless: boolean
   onHumanMetricsChange?: (metrics: HumanLiveMetrics) => void
+  imitation?: [ImitationState, ImitationActions]
+  policyGradient?: [PolicyGradientState, PolicyGradientActions]
 }
 
 const modeLabels: Record<string, string> = {
@@ -57,21 +64,8 @@ function StatusBadge({ label, color, pulse = false }: { label: string; color: "p
   )
 }
 
-function MetadataCell({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="flex flex-col gap-1 rounded-lg bg-card border border-border p-3">
-      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {label}
-      </span>
-      <span className="text-xs font-mono font-medium text-card-foreground tabular-nums">
-        {value}
-      </span>
-    </div>
-  )
-}
-
-export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: GamePanelProps) {
-  const { metrics, run } = mockState
+export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitation, policyGradient }: GamePanelProps) {
+  const { metrics } = mockState
   const progressPct = Math.round((metrics.episode / metrics.totalEpisodes) * 100)
 
   const sceneRef = useRef<HTMLDivElement>(null)
@@ -85,6 +79,64 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
   const runStartTimeRef = useRef<number | null>(null)
   const frameCountRef = useRef(0)
   const lastRecordedRunRef = useRef(0)
+  const lastEvalReportedRef = useRef(0)
+
+  const [imitState, imitActions] = imitation ?? [undefined, undefined]
+  const [pgState, pgActions] = policyGradient ?? [undefined, undefined]
+
+  const humanCtrl = useMemo(() => new HumanController(), [])
+  const modelCtrlRef = useRef<ModelController | null>(null)
+  const samplingCtrlRef = useRef<SamplingModelController | null>(null)
+
+  const predictRef = useRef<((obs: number[]) => number) | null>(null)
+  useEffect(() => {
+    const model = activeMode === "imitation" ? imitState?.model : activeMode === "policy-gradient" ? pgState?.model : null
+    const threshold = activeMode === "imitation" ? imitState?.threshold : activeMode === "policy-gradient" ? pgState?.threshold : 0.5
+    if (model) {
+      predictRef.current = (obs: number[]) => model.predict(obs)[0]
+      modelCtrlRef.current = new ModelController(predictRef.current, threshold)
+      samplingCtrlRef.current = new SamplingModelController(predictRef.current)
+    } else {
+      modelCtrlRef.current = null
+      samplingCtrlRef.current = null
+    }
+  }, [activeMode, imitState?.model, imitState?.threshold, pgState?.model, pgState?.threshold])
+
+  const isHuman = activeMode === "human"
+  const isImitationEval = activeMode === "imitation" && !!imitState?.isEvaluating && !!imitState?.model
+  const isPolicyGradientEval = activeMode === "policy-gradient" && !!pgState?.isEvaluating && !!pgState?.model
+  const isPolicyGradientTraining = activeMode === "policy-gradient" && !!pgState?.isTraining && !isHeadless && !!pgState?.model
+  const controller =
+    isPolicyGradientTraining && samplingCtrlRef.current
+      ? samplingCtrlRef.current
+      : (isImitationEval || isPolicyGradientEval) && modelCtrlRef.current
+        ? modelCtrlRef.current
+        : humanCtrl
+
+  useEffect(() => {
+    if (activeMode !== "human") return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.code === "Space" || e.code === "ArrowUp") && !e.repeat) {
+        e.preventDefault()
+        humanCtrl.setJumpPressed(true)
+      }
+    }
+    window.addEventListener("keydown", onKeyDown, true)
+    return () => window.removeEventListener("keydown", onKeyDown, true)
+  }, [activeMode, humanCtrl])
+
+  const onStep = useCallback((obs: number[], action: Action, state: { playerY: number; playerVy: number }) => {
+    if (!imitState?.isRecording || !imitActions) return
+    const grounded = state.playerY <= 0 && state.playerVy <= 0
+    if (!grounded) return
+    imitActions.recordSample(obs, action)
+  }, [imitState?.isRecording, imitActions])
+
+  useEffect(() => {
+    if (activeMode !== "human" && !isImitationEval && !isPolicyGradientEval && !isPolicyGradientTraining) {
+      setGameStarted(false)
+    }
+  }, [activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining])
 
   useEffect(() => {
     if (activeMode !== "human") return
@@ -107,7 +159,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
   }
 
   useEffect(() => {
-    if (activeMode !== "human" || isHeadless) return
+    if ((!isHuman && activeMode !== "imitation" && activeMode !== "policy-gradient") || (isHeadless && !isPolicyGradientTraining)) return
     const el = sceneRef.current
     if (!el) return
     const update = () => setSceneWidth(el.clientWidth)
@@ -115,15 +167,37 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
     const ro = new ResizeObserver(update)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [activeMode, isHeadless])
+  }, [isHuman, activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, isHeadless])
 
-  const runner = useHumanRunner({
-    paused: isHeadless || activeMode !== "human",
-    viewWidth: activeMode === "human" ? sceneWidth : 800,
-    started: activeMode === "human" ? gameStarted : true,
+  const trajectoryRef = useRef<{ obs: number[]; action: number; logProb: number; reward: number }[]>([])
+  const onStepComplete = useCallback(
+    (obs: number[], action: number, logProb: number, reward: number) => {
+      if (!isPolicyGradientTraining) return
+      trajectoryRef.current.push({ obs, action, logProb, reward })
+    },
+    [isPolicyGradientTraining]
+  )
+
+  const showGame = activeMode === "human" || isImitationEval || isPolicyGradientEval || isPolicyGradientTraining
+  const agentSimSpeed = isPolicyGradientTraining ? (pgState?.simSpeed ?? 1) : 1
+  const runner = useGameRunner({
+    controller,
+    paused: isHeadless || !showGame,
+    viewWidth: showGame ? sceneWidth : 800,
+    started: showGame ? gameStarted : false,
+    simSpeed: agentSimSpeed,
+    onStep: activeMode === "human" && imitState?.isRecording ? onStep : undefined,
+    onStepComplete: isPolicyGradientTraining ? onStepComplete : undefined,
   })
 
-  const isHuman = activeMode === "human"
+  useEffect(() => {
+    if (activeMode === "imitation" && !isImitationEval && !isPolicyGradientTraining) {
+      runner.reset()
+    }
+    if (activeMode === "policy-gradient" && !isPolicyGradientEval && !isPolicyGradientTraining) {
+      runner.reset()
+    }
+  }, [activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, runner.reset])
 
   useEffect(() => {
     if (!isHuman || !runner.gameOver || runCount === 0) return
@@ -131,6 +205,55 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
     lastRecordedRunRef.current = runCount
     setScoreHistory((prev) => [...prev, { name: String(runCount), value: runner.score }])
   }, [isHuman, runner.gameOver, runner.score, runCount])
+
+  useEffect(() => {
+    if (isPolicyGradientTraining && !gameStarted) {
+      trajectoryRef.current = []
+      runner.reset(Date.now())
+      setGameStarted(true)
+      setRunCount((c) => c + 1)
+    }
+  }, [isPolicyGradientTraining, gameStarted, runner.reset])
+
+  useEffect(() => {
+    if (!isImitationEval && !isPolicyGradientEval && !isPolicyGradientTraining) return
+    if (isPolicyGradientTraining && runner.gameOver && pgActions?.reportEpisodeComplete) {
+      const trajectory = trajectoryRef.current.map((t) => ({
+        obs: t.obs,
+        action: t.action as 0 | 1,
+        logProb: t.logProb,
+        reward: t.reward,
+      }))
+      const nextSeed = pgActions.reportEpisodeComplete(trajectory, runner.score)
+      trajectoryRef.current = []
+      if (nextSeed !== null) {
+        const id = setTimeout(() => {
+          runner.reset(nextSeed)
+          setGameStarted(true)
+          setRunCount((c) => c + 1)
+        }, 0)
+        return () => clearTimeout(id)
+      }
+      return
+    }
+    if (!isImitationEval && !isPolicyGradientEval) return
+    if (!gameStarted) {
+      setGameStarted(true)
+      setRunCount((c) => c + 1)
+    } else if (runner.gameOver) {
+      if (lastEvalReportedRef.current !== runCount) {
+        lastEvalReportedRef.current = runCount
+        if (isImitationEval) imitActions?.reportEvalScore?.(runner.score)
+        if (isPolicyGradientEval) pgActions?.reportEvalScore?.(runner.score)
+      }
+      const id = setTimeout(() => {
+        runner.reset()
+        setGameStarted(true)
+        setRunCount((c) => c + 1)
+      }, 0)
+      return () => clearTimeout(id)
+    }
+  }, [isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, gameStarted, runner.gameOver, runner.score, runner.reset, imitActions, pgActions, runCount])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -220,7 +343,19 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
                 : gameStarted
                   ? "Playing"
                   : "Stopped"
-              : "Training"
+              : activeMode === "imitation" && imitState?.isEvaluating
+                ? "Evaluating"
+                : activeMode === "policy-gradient" && pgState?.isEvaluating
+                  ? "Evaluating"
+                  : imitState?.isTraining
+                    ? "Training"
+                    : pgState?.isTraining
+                      ? "Training"
+                      : activeMode === "imitation"
+                        ? "Ready"
+                        : activeMode === "policy-gradient"
+                          ? "Ready"
+                          : "Training"
           }
           color={
             activeMode === "human"
@@ -234,7 +369,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
       </div>
 
       <div
-        className="relative min-h-[200px] flex-1 rounded-xl border border-border bg-card overflow-hidden"
+        className="relative flex-1 min-h-[200px] rounded-xl border border-border bg-card overflow-hidden"
         role="img"
         aria-label="Game simulation canvas"
       >
@@ -258,7 +393,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
         ) : (
           <div className="flex h-full flex-col items-center justify-center">
             <div
-              ref={isHuman ? sceneRef : undefined}
+              ref={isHuman || activeMode === "imitation" || activeMode === "policy-gradient" ? sceneRef : undefined}
               className="relative w-full h-full bg-[#0A0C0F] flex items-end"
             >
               <div className="absolute bottom-12 left-0 right-0 h-px bg-border" />
@@ -278,11 +413,11 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
                 style={{
                   left: GAME_CONFIG.playerX,
                   bottom: "calc(3rem + 10px)",
-                  ...(isHuman && runner.state ? { transform: `translateY(-${runner.state.playerY}px)` } : {}),
+                  ...(showGame && runner.state ? { transform: `translateY(-${runner.state.playerY}px)` } : {}),
                 }}
                 aria-hidden="true"
               >
-                {isHuman && runner.state && debugHitboxes && (
+                {showGame && runner.state && debugHitboxes && (
                   <div
                     className="absolute pointer-events-none rounded-sm border-2 border-yellow-400"
                     style={{
@@ -296,8 +431,9 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
                 )}
                 <div className="h-8 w-6 rounded-sm bg-primary shadow-[0_0_12px_rgba(59,130,246,0.3)]" />
                 {(() => {
-                  const grounded = isHuman && runner.state && !runner.gameOver && runner.state.playerY <= 0
-                  const inAir = isHuman && runner.state && !runner.gameOver && runner.state.playerY > 0
+                  const isActive = showGame || activeMode === "imitation" || activeMode === "policy-gradient"
+                  const grounded = isActive && runner.state && !runner.gameOver && (runner.state.playerY <= 0)
+                  const inAir = isActive && runner.state && !runner.gameOver && runner.state.playerY > 0
                   return (
                     <>
                       <div
@@ -311,7 +447,27 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
                 })()}
               </div>
 
-              {isHuman && runner.state ? (
+              {(isImitationEval || isPolicyGradientEval) && (
+                <div
+                  className="absolute flex flex-col items-center gap-0.5 pointer-events-none"
+                  style={{
+                    left: GAME_CONFIG.playerX + GAME_CONFIG.playerW / 2,
+                    bottom: "calc(3rem + 10px + 10rem)",
+                    transform: "translateX(-50%)",
+                  }}
+                >
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                    Jump Probability
+                  </span>
+                  <span className="text-2xl font-mono font-bold text-foreground/80 tabular-nums">
+                    {runner.state && ((isImitationEval && imitState?.model) || (isPolicyGradientEval && pgState?.model))
+                      ? (imitState?.model ?? pgState?.model)!.predict(getObservation(runner.state))[0].toFixed(3)
+                      : "0.000"}
+                  </span>
+                </div>
+              )}
+
+              {(showGame || activeMode === "imitation" || activeMode === "policy-gradient") && runner.state ? (
                 runner.state.obstacles.map((o) => (
                   <div
                     key={o.id}
@@ -338,7 +494,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
                 </>
               )}
 
-              {isHuman && runner.state && debugHitboxes && (
+              {showGame && runner.state && debugHitboxes && (
                 <>
                   {runner.state.obstacles.map((o) => (
                     <div
@@ -356,44 +512,62 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
                 </>
               )}
 
-              <div className="absolute top-4 right-4 flex flex-col items-end gap-1">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
-                  Score
-                </span>
-                <span className="text-2xl font-mono font-bold text-foreground/80 tabular-nums">
-                  {String(isHuman ? runner.score : metrics.score).padStart(5, "0")}
-                </span>
+              <div className="absolute top-4 right-4 flex items-start gap-4">
+                {(isHuman || activeMode === "imitation" || activeMode === "policy-gradient") && (
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                      HI
+                    </span>
+                    <span className="text-2xl font-mono font-bold text-muted-foreground/50 tabular-nums">
+                      {String(runner.bestScore).padStart(5, "0")}
+                    </span>
+                  </div>
+                )}
+                <div className="flex flex-col items-end gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                    Score
+                  </span>
+                  <span className="text-2xl font-mono font-bold text-foreground/80 tabular-nums">
+                    {String(runner.score).padStart(5, "0")}
+                  </span>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                    Speed
+                  </span>
+                  <span className="text-2xl font-mono font-bold text-foreground/80 tabular-nums">
+                    {runner.speed.toFixed(1)}x
+                  </span>
+                </div>
               </div>
 
               <div className="absolute top-4 left-4 flex flex-col gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
-                    Distance
-                  </span>
-                  <span
-                    className={cn(
-                      "text-xs font-mono tabular-nums",
-                      isHuman ? "text-foreground/80" : "text-muted-foreground/50"
-                    )}
-                  >
-                    {isHuman
-                      ? `${Math.round(Number(runner.pixelsTraveled ?? 0)).toLocaleString()} px`
-                      : run.distance}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
-                    FPS
-                  </span>
-                  <span
-                    className={cn(
-                      "text-xs font-mono tabular-nums",
-                      isHuman ? "text-foreground/80" : "text-muted-foreground/50"
-                    )}
-                  >
-                    {isHuman ? measuredFps : run.fps}
-                  </span>
-                </div>
+                {isHuman && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                        FPS
+                      </span>
+                      <span className="text-xs font-mono tabular-nums text-foreground/80">
+                        {measuredFps}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                        Distance
+                      </span>
+                      <span className="text-xs font-mono tabular-nums text-foreground/80">
+                        {`${Math.round(Number(runner.pixelsTraveled ?? 0)).toLocaleString()} px`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                        Duration
+                      </span>
+                      <span className="text-xs font-mono tabular-nums text-foreground/80">
+                        {formatDuration(runDurationSeconds)}
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
 
               {isHuman && runner.state && !gameStarted && (
@@ -418,6 +592,18 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
                   >
                     Start Game
                   </button>
+                </div>
+              )}
+
+              {activeMode === "imitation" && !isImitationEval && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                  <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
+                    {imitState?.model
+                      ? "Model ready — click Evaluate in the panel to watch it play"
+                      : imitState && imitState.datasetSize > 0
+                        ? "Dataset recorded — click Train Model in the panel"
+                        : "Play in Human mode with Record on to collect training data"}
+                  </span>
                 </div>
               )}
 
@@ -456,7 +642,35 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
         )}
       </div>
 
-      {!isHuman && (
+      {activeMode === "policy-gradient" && (
+        <div className="flex shrink-0 flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+              Updates Progress
+              <InfoTooltip description="Policy updates completed. Each update uses Episodes/Update episodes." />
+            </span>
+            <span className="text-[11px] font-mono font-medium text-muted-foreground tabular-nums">
+              {(pgState?.returnHistory?.length ?? 0)} / {(pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500)}
+            </span>
+          </div>
+          <div
+            className="h-1.5 w-full rounded-full bg-secondary"
+            role="progressbar"
+            aria-valuenow={pgState?.returnHistory?.length ?? 0}
+            aria-valuemin={0}
+            aria-valuemax={(pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500)}
+            aria-label="Updates progress"
+          >
+            <div
+              className="h-full rounded-full bg-primary transition-all duration-300"
+              style={{
+                width: `${Math.min(100, ((pgState?.returnHistory?.length ?? 0) / ((pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500) || 1)) * 100)}%`,
+              }}
+            />
+          </div>
+        </div>
+      )}
+      {activeMode === "evolution" && (
         <div className="flex shrink-0 flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-medium text-muted-foreground">Episode Progress</span>
@@ -480,29 +694,75 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
         </div>
       )}
 
-      {!isHuman && (
-        <div className="grid shrink-0 grid-cols-4 gap-3">
-          <MetadataCell label="Run ID" value={run.id} />
-          <MetadataCell label="Duration" value={run.duration} />
-          <MetadataCell label="FPS" value={run.fps} />
-          <MetadataCell label="Params" value={run.params} />
-        </div>
-      )}
-
-      <div className={cn("shrink-0", isHuman ? "grid grid-cols-[auto_1fr] gap-4" : "")}>
+      <div className={cn(
+        "shrink-0",
+        (isHuman || activeMode === "imitation" || activeMode === "policy-gradient") && "grid grid-cols-[2fr_3fr] gap-4"
+      )}>
         {isHuman && (
-          <div className="grid grid-cols-2 gap-3 content-start w-[280px]">
-            <MetricTile label="Score" value={runner.score} highlight />
-            <MetricTile label="Best" value={runner.bestScore} />
-            <MetricTile label="Runs" value={runCount} />
-            <MetricTile label="Speed" value={runner.speed.toFixed(3)} unit="x" />
-            <MetricTile label="Action" value={runner.state && (runner.state.playerY > 0 || runner.state.playerVy > 0) ? "JUMP" : "RUN"} />
-            <MetricTile label="Duration" value={formatDuration(runDurationSeconds)} />
+          <div className="min-w-0">
+            {scoreHistory.length > 0 ? (
+              <ChartContainer data={scoreHistory} label="Score History" color="var(--primary)" />
+            ) : (
+              <div className="flex flex-col gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                  Score History
+                </span>
+                <div className="flex h-[180px] items-center justify-center rounded-md border border-dashed border-border">
+                  <span className="text-xs text-muted-foreground">No runs yet</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {activeMode === "imitation" && (
+          <div className="min-w-0">
+            {imitState?.lossHistory && imitState.lossHistory.length > 0 ? (
+              <ChartContainer
+                data={imitState.lossHistory}
+                label="Training Loss"
+                color="var(--primary)"
+                tooltip="Measures how wrong the model's predictions are during training. Lower is better. The chart shows loss over each epoch."
+              />
+            ) : (
+              <div className="flex flex-col gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  Training Loss
+                  <InfoTooltip description="Measures how wrong the model's predictions are during training. Lower is better. The chart shows loss over each epoch." />
+                </span>
+                <div className="flex h-[180px] items-center justify-center rounded-md border border-dashed border-border">
+                  <span className="text-xs text-muted-foreground">
+                    {imitState?.datasetSize === 0 ? "Record data first" : "Train to see loss"}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {activeMode === "policy-gradient" && (
+          <div className="min-w-0">
+            {pgState?.returnHistory && pgState.returnHistory.length > 0 ? (
+              <ChartContainer
+                data={pgState.returnHistory}
+                label="Average Return"
+                color="var(--accent)"
+                tooltip="Average episode return per update. Higher is better."
+              />
+            ) : (
+              <div className="flex flex-col gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  Average Return
+                  <InfoTooltip description="Average episode return per update. Higher is better." />
+                </span>
+                <div className="h-[180px] flex items-center justify-center rounded-md border border-dashed border-border">
+                  <span className="text-xs text-muted-foreground">Train to see returns</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
         <ObservationInspector
           observations={
-            isHuman && runner.state
+            (showGame || activeMode === "imitation") && runner.state
               ? (() => {
                   const s = runner.state!
                   const obs = getObservation(s)
@@ -523,6 +783,59 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange }: Game
           }
         />
       </div>
+
+      {activeMode === "imitation" && (
+        <div className="grid grid-cols-6 gap-2 shrink-0">
+          <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
+            <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+              Final Loss
+              <InfoTooltip description="The loss value at the end of training. Lower means the model learned the training data better." />
+            </span>
+            <span className="text-lg font-mono font-semibold tabular-nums text-primary">
+              {imitState?.finalLoss != null ? imitState.finalLoss.toFixed(4) : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
+            <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+              Precision
+              <InfoTooltip description="Of the times the model predicted jump, how often was the human also jumping? High precision = fewer unnecessary jumps." />
+            </span>
+            <span className="text-lg font-mono font-semibold tabular-nums text-primary">
+              {imitState?.metrics ? imitState.metrics.precision.toFixed(3) : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
+            <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+              Recall
+              <InfoTooltip description="Of the times the human jumped, how often did the model also predict jump? High recall = catches most of the jump moments." />
+            </span>
+            <span className="text-lg font-mono font-semibold tabular-nums text-primary">
+              {imitState?.metrics ? imitState.metrics.recall.toFixed(3) : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
+            <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+              F1
+              <InfoTooltip description="Single score balancing precision and recall. F1 = 1 is perfect; lower means the model misses jumps, jumps too often, or both." />
+            </span>
+            <span className="text-lg font-mono font-semibold tabular-nums text-accent">
+              {imitState?.metrics ? imitState.metrics.f1.toFixed(3) : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
+            <span className="text-[11px] font-medium text-muted-foreground">Best Eval Score</span>
+            <span className="text-lg font-mono font-semibold tabular-nums text-accent">
+              {(imitState?.evalRunCount ?? 0) > 0 ? imitState?.bestEvalScore : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
+            <span className="text-[11px] font-medium text-muted-foreground">Eval Runs</span>
+            <span className="text-lg font-mono font-semibold tabular-nums text-primary">
+              {imitState?.evalRunCount ?? 0}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

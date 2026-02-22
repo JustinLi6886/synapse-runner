@@ -19,3 +19,13 @@ export function relu(x: number): number {
 export function reluDerivative(z: number): number {
   return z > 0 ? 1 : 0
 }
+
+const LEAKY = 0.01
+
+export function leakyRelu(x: number): number {
+  return x > 0 ? x : LEAKY * x
+}
+
+export function leakyReluDerivative(z: number): number {
+  return z > 0 ? 1 : LEAKY
+}
