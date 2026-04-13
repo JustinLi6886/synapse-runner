@@ -5,11 +5,22 @@ import type { Action } from "@/game/types"
 const FIXED_DT = 1 / 60
 const VIEW_WIDTH = 800
 
+function createSeededRandom(seed: number): () => number {
+  let s = seed
+  return () => {
+    let t = (s += 0x6d2b79f5) | 0
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
 export interface TrajectoryStep {
   obs: number[]
   action: Action
   logProb: number
   reward: number
+  grounded: boolean
 }
 
 export interface EpisodeResult {
@@ -31,8 +42,9 @@ export function runEpisodeEval(
 
   while (!state.gameOver) {
     const obs = getObservation(state)
-    const pJump = nn.predict(obs)[0]
-    const action: Action = pJump >= threshold ? 1 : 0
+    const grounded = state.playerY <= 0
+    const pJump = nn.predictOnly(obs)
+    const action: Action = grounded && obs[0] <= OBS_PROXIMITY && pJump >= threshold ? 1 : 0
     const result = step(state, action, FIXED_DT)
     state = result.state
     steps++
@@ -50,16 +62,18 @@ export function runEpisode(
 ): EpisodeResult {
   const trajectory: TrajectoryStep[] = []
   let state = createGameState(VIEW_WIDTH, seed)
+  const rng = createSeededRandom(seed ^ 0xa5a5a5a5)
 
   while (!state.gameOver) {
     const obs = getObservation(state)
-    const pJump = Math.max(1e-8, Math.min(1 - 1e-8, nn.predict(obs)[0]))
-    const action: Action = Math.random() < pJump ? 1 : 0
+    const grounded = state.playerY <= 0
+    const pJump = Math.max(1e-7, Math.min(1 - 1e-7, nn.predictOnly(obs)))
+    const action: Action = grounded && obs[0] <= OBS_PROXIMITY && rng() < pJump ? 1 : 0
     const logProb =
       action * Math.log(pJump) + (1 - action) * Math.log(1 - pJump)
 
     const result = step(state, action, FIXED_DT)
-    trajectory.push({ obs, action, logProb, reward: result.reward })
+    trajectory.push({ obs, action, logProb, reward: result.reward, grounded })
     state = result.state
   }
 
@@ -79,18 +93,22 @@ export function computeReturns(
   gamma: number,
   normalize = true
 ): number[] {
-  const G: number[] = []
+  const T = rewards.length
+  const G = new Array<number>(T)
   let acc = 0
-  for (let t = rewards.length - 1; t >= 0; t--) {
+  for (let t = T - 1; t >= 0; t--) {
     acc = rewards[t] + gamma * acc
-    G.unshift(acc)
+    G[t] = acc
   }
-  if (!normalize || G.length === 0) return G
-  const mean = G.reduce((a, b) => a + b, 0) / G.length
-  const variance =
-    G.reduce((a, b) => a + (b - mean) ** 2, 0) / G.length
-  const std = Math.sqrt(variance) + 1e-8
-  return G.map((g) => (g - mean) / std)
+  if (!normalize || T === 0) return G
+  let sum = 0
+  for (let t = 0; t < T; t++) sum += G[t]
+  const mean = sum / T
+  let varSum = 0
+  for (let t = 0; t < T; t++) varSum += (G[t] - mean) ** 2
+  const std = Math.sqrt(varSum / T) + 1e-8
+  for (let t = 0; t < T; t++) G[t] = (G[t] - mean) / std
+  return G
 }
 
 export interface ReinforceConfig {
@@ -98,23 +116,30 @@ export interface ReinforceConfig {
   learningRate: number
   clipGrad: number
   episodesPerUpdate: number
-  evalSeeds: number[]
+  entropyCoef: number
 }
 
+// Agent can only consider jumping when obstacle is within actionable range.
+// 0.5 * 720 = 360px ≈ 1.5 jump distances. Wide enough for meaningful
+// timing variation so the network can learn WHEN to jump, not just IF.
+const OBS_PROXIMITY = 0.5
+
 /**
- * Train one REINFORCE update: collect episodes, compute returns, policy update.
- * If shouldStop returns true, aborts early (no policy update).
+ * Train one REINFORCE update with Monte Carlo returns.
+ * Collects episodes, computes discounted returns, normalizes, then does policy gradient.
+ * Gate in runEpisode ensures the agent only jumps within OBS_PROXIMITY;
+ * policy gradient uses grounded steps inside the gate only (see loop below).
  */
 export function reinforceUpdate(
   nn: NeuralNetwork,
   config: ReinforceConfig,
   seedBase: number,
   onEpisode?: (result: EpisodeResult) => void,
-  shouldStop?: () => boolean
+  shouldStop?: () => boolean,
 ): { avgReturn: number; bestScore: number; totalSteps: number } {
   const allObs: number[][] = []
   const allActions: number[] = []
-  const allReturns: number[] = []
+  const allAdvantages: number[] = []
   let totalReturn = 0
   let bestScore = 0
   let totalSteps = 0
@@ -129,27 +154,34 @@ export function reinforceUpdate(
 
     const rewards = trajectory.map((s) => s.reward)
     const returns = computeReturns(rewards, config.gamma, false)
-
     for (let t = 0; t < trajectory.length; t++) {
-      allObs.push(trajectory[t].obs)
-      allActions.push(trajectory[t].action)
-      allReturns.push(returns[t])
+      const s = trajectory[t]
+      // Only train on steps where the agent had a real decision:
+      // grounded AND within the gate. Gate-blocked steps (obs[0] > OBS_PROXIMITY)
+      // have forced action=0, so their gradient is biased.
+      if (!s.grounded || s.obs[0] > OBS_PROXIMITY) continue
+      allObs.push(s.obs)
+      allActions.push(s.action)
+      allAdvantages.push(returns[t])
     }
-    totalReturn += rewards.reduce((a, b) => a + b, 0)
+
+    totalReturn += trajectory.reduce((a, s) => a + s.reward, 0)
     bestScore = Math.max(bestScore, score)
     totalSteps += steps
   }
 
   if (allObs.length === 0) return { avgReturn: 0, bestScore, totalSteps }
 
-  const mean = allReturns.reduce((a, b) => a + b, 0) / allReturns.length
-  const variance = allReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / allReturns.length
+  // Standardize returns: (G - mean) / (std + eps)
+  const mean = allAdvantages.reduce((a, b) => a + b, 0) / allAdvantages.length
+  const variance = allAdvantages.reduce((a, b) => a + (b - mean) ** 2, 0) / allAdvantages.length
   const std = Math.sqrt(variance) + 1e-8
-  const normalizedReturns = allReturns.map((g) => (g - mean) / std)
+  const normalizedAdvantages = allAdvantages.map((a) => (a - mean) / std)
 
-  nn.policyGradientUpdate(allObs, allActions, normalizedReturns, {
+  nn.policyGradientUpdate(allObs, allActions, normalizedAdvantages, {
     clipGrad: config.clipGrad,
     lr: config.learningRate,
+    entropyCoef: config.entropyCoef,
   })
 
   const avgReturn = episodesRun > 0 ? totalReturn / episodesRun : 0
@@ -158,17 +190,16 @@ export function reinforceUpdate(
 
 /**
  * Policy update from pre-collected trajectories (e.g. from visual training).
- * scores[i] = game score for trajectories[i].
  */
 export function policyUpdateFromTrajectories(
   nn: NeuralNetwork,
   trajectories: TrajectoryStep[][],
   scores: number[],
-  config: { gamma: number; learningRate: number; clipGrad: number }
+  config: { gamma: number; learningRate: number; clipGrad: number; entropyCoef: number },
 ): { avgReturn: number; bestScore: number } {
   const allObs: number[][] = []
   const allActions: number[] = []
-  const allReturns: number[] = []
+  const allAdvantages: number[] = []
   let totalReturn = 0
   let bestScore = 0
 
@@ -177,22 +208,28 @@ export function policyUpdateFromTrajectories(
     const rewards = trajectory.map((s) => s.reward)
     const returns = computeReturns(rewards, config.gamma, false)
     for (let t = 0; t < trajectory.length; t++) {
-      allObs.push(trajectory[t].obs)
-      allActions.push(trajectory[t].action)
-      allReturns.push(returns[t])
+      const s = trajectory[t]
+      if (!s.grounded || s.obs[0] > OBS_PROXIMITY) continue
+      allObs.push(s.obs)
+      allActions.push(s.action)
+      allAdvantages.push(returns[t])
     }
-    totalReturn += rewards.reduce((a, b) => a + b, 0)
+
+    totalReturn += trajectory.reduce((a, s) => a + s.reward, 0)
     bestScore = Math.max(bestScore, scores[i] ?? 0)
   }
 
-  const mean = allReturns.reduce((a, b) => a + b, 0) / allReturns.length
-  const variance = allReturns.reduce((a, b) => a + (b - mean) ** 2, 0) / allReturns.length
-  const std = Math.sqrt(variance) + 1e-8
-  const normalizedReturns = allReturns.map((g) => (g - mean) / std)
+  if (allObs.length === 0) return { avgReturn: totalReturn / Math.max(1, trajectories.length), bestScore }
 
-  nn.policyGradientUpdate(allObs, allActions, normalizedReturns, {
+  const mean = allAdvantages.reduce((a, b) => a + b, 0) / allAdvantages.length
+  const variance = allAdvantages.reduce((a, b) => a + (b - mean) ** 2, 0) / allAdvantages.length
+  const std = Math.sqrt(variance) + 1e-8
+  const normalizedAdvantages = allAdvantages.map((a) => (a - mean) / std)
+
+  nn.policyGradientUpdate(allObs, allActions, normalizedAdvantages, {
     clipGrad: config.clipGrad,
     lr: config.learningRate,
+    entropyCoef: config.entropyCoef,
   })
 
   const avgReturn = totalReturn / trajectories.length

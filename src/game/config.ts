@@ -17,5 +17,7 @@ export const GAME_CONFIG = {
   baseMovePx: 6,
   speedStart: 1,
   speedMax: 5,
+  // Continuous speed ramp: speed = speedStart + distance * speedAccel, clamped to speedMax
+  speedAccel: 0.004,
   distancePerSecond: 9.22,
 } as const

@@ -16,6 +16,7 @@ const DEFAULT_OBSERVATIONS: ObservationFeature[] = [
   { label: "Player Y", value: 0, max: 1, displayValue: "0.0" },
   { label: "Player Velocity", value: 0.5, max: 1, displayValue: "0.00" },
   { label: "Game Speed", value: 0.2, max: 1, displayValue: "1.00" },
+  { label: "Height Clearance", value: 0, max: 1, displayValue: "0.00" },
 ]
 
 interface ObservationInspectorProps {

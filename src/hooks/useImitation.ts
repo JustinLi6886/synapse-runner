@@ -4,6 +4,37 @@ import { NeuralNetwork } from "@/nn/NeuralNetwork"
 import { trainImitation } from "@/ai/imitation"
 import type { Action } from "@/game/types"
 import type { DataSample } from "@/ai/dataset"
+import { getPersisted, schedulePersist } from "@/lib/app-persist"
+
+function createInitialDataset(): Dataset {
+  const ds = new Dataset()
+  const pi = getPersisted()?.imitation
+  if (pi?.datasetJson) {
+    try {
+      ds.importJSON(pi.datasetJson)
+    } catch {
+      /* ignore */
+    }
+  }
+  return ds
+}
+
+function initialDatasetStats(): { size: number; balance: { jump: number; noop: number } } {
+  const pi = getPersisted()?.imitation
+  if (!pi?.datasetJson) return { size: 0, balance: { jump: 0, noop: 0 } }
+  try {
+    const parsed = JSON.parse(pi.datasetJson) as DataSample[]
+    let jump = 0
+    let noop = 0
+    for (const s of parsed) {
+      if (s.action === 1) jump++
+      else noop++
+    }
+    return { size: parsed.length, balance: { jump, noop } }
+  } catch {
+    return { size: 0, balance: { jump: 0, noop: 0 } }
+  }
+}
 
 export interface ImitationMetrics {
   precision: number
@@ -76,53 +107,68 @@ export interface ImitationActions {
 }
 
 export function useImitation(): [ImitationState, ImitationActions] {
-  const datasetRef = useRef(new Dataset())
+  const datasetRef = useRef<Dataset | null>(null)
+  if (datasetRef.current == null) {
+    datasetRef.current = createInitialDataset()
+  }
   const stopRef = useRef(false)
 
-  const [datasetSize, setDatasetSize] = useState(0)
-  const [datasetBalance, setDatasetBalance] = useState({ jump: 0, noop: 0 })
+  const pi0 = getPersisted()?.imitation
+  const [datasetSize, setDatasetSize] = useState(() => initialDatasetStats().size)
+  const [datasetBalance, setDatasetBalance] = useState(() => initialDatasetStats().balance)
   const [isRecording, setIsRecording] = useState(false)
-  const [model, setModel] = useState<NeuralNetwork | null>(null)
-  const [lossHistory, setLossHistory] = useState<{ name: string; value: number }[]>([])
+  const [model, setModel] = useState<NeuralNetwork | null>(() => {
+    const j = pi0?.modelJson
+    if (!j) return null
+    try {
+      return NeuralNetwork.fromWeights(j)
+    } catch {
+      return null
+    }
+  })
+  const [lossHistory, setLossHistory] = useState<{ name: string; value: number }[]>(
+    () => pi0?.lossHistory ?? [],
+  )
   const [isTraining, setIsTraining] = useState(false)
-  const [threshold, setThreshold] = useState(0.5)
-  const [thresholdAuto, setThresholdAuto] = useState(true)
+  const [threshold, setThreshold] = useState(() => pi0?.threshold ?? 0.5)
+  const [thresholdAuto, setThresholdAuto] = useState(() => pi0?.thresholdAuto ?? true)
   const [isEvaluating, setIsEvaluating] = useState(false)
-  const [finalLoss, setFinalLoss] = useState<number | null>(null)
+  const [finalLoss, setFinalLoss] = useState<number | null>(() => pi0?.finalLoss ?? null)
   const [metrics, setMetrics] = useState<ImitationMetrics | null>(null)
-  const [bestEvalScore, setBestEvalScore] = useState(0)
-  const [evalRunCount, setEvalRunCount] = useState(0)
+  const [bestEvalScore, setBestEvalScore] = useState(() => pi0?.bestEvalScore ?? 0)
+  const [evalRunCount, setEvalRunCount] = useState(() => pi0?.evalRunCount ?? 0)
 
   const syncStats = useCallback(() => {
-    setDatasetSize(datasetRef.current.size)
-    setDatasetBalance(datasetRef.current.balance)
+    const d = datasetRef.current!
+    setDatasetSize(d.size)
+    setDatasetBalance(d.balance)
   }, [])
 
   const toggleRecording = useCallback(() => {
-    const ds = datasetRef.current
-    if (ds.recording) {
-      ds.stopRecording()
+    const d = datasetRef.current!
+    if (d.recording) {
+      d.stopRecording()
       setIsRecording(false)
     } else {
-      ds.startRecording()
+      d.startRecording()
       setIsRecording(true)
     }
     syncStats()
   }, [syncStats])
 
   const recordSample = useCallback((obs: number[], action: Action) => {
-    datasetRef.current.record(obs, action)
-    if (datasetRef.current.size % 5 === 0 || datasetRef.current.size === 1) syncStats()
+    datasetRef.current!.record(obs, action)
+    syncStats()
   }, [syncStats])
 
   const clearDataset = useCallback(() => {
-    datasetRef.current.clear()
+    datasetRef.current!.clear()
     setIsRecording(false)
     syncStats()
   }, [syncStats])
 
   const exportDataset = useCallback(() => {
-    const json = datasetRef.current.exportJSON()
+    const json = datasetRef.current!.exportJSON()
     const blob = new Blob([json], { type: "application/json" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -133,7 +179,7 @@ export function useImitation(): [ImitationState, ImitationActions] {
   }, [])
 
   const importDataset = useCallback((json: string) => {
-    datasetRef.current.importJSON(json)
+    datasetRef.current!.importJSON(json)
     syncStats()
   }, [syncStats])
 
@@ -154,16 +200,19 @@ export function useImitation(): [ImitationState, ImitationActions] {
     try {
       const nn = NeuralNetwork.fromWeights(json)
       setModel(nn)
+      setLossHistory([])
+      setFinalLoss(null)
+      setMetrics(null)
     } catch {
       // Invalid JSON or shape mismatch
     }
   }, [])
 
   const train = useCallback(async (epochs: number, lr: number, batchSize: number) => {
-    const samples = datasetRef.current.getBalancedSamples()
+    const samples = datasetRef.current!.getBalancedSamples()
     if (samples.length === 0) return
 
-    const nn = new NeuralNetwork({ layers: [6, 16, 8, 1], learningRate: lr, seed: 42 })
+    const nn = new NeuralNetwork({ layers: [7, 32, 16, 1], learningRate: lr, seed: 42 })
     setIsTraining(true)
     setLossHistory([])
     setFinalLoss(null)
@@ -185,7 +234,7 @@ export function useImitation(): [ImitationState, ImitationActions] {
 
     setModel(nn)
     setFinalLoss(lastLoss)
-    const allSamples = datasetRef.current.getSamples()
+    const allSamples = datasetRef.current!.getSamples()
     if (allSamples.length > 0 && thresholdAuto) {
       const optimal = findOptimalThreshold(nn, allSamples)
       setThreshold(optimal)
@@ -194,8 +243,34 @@ export function useImitation(): [ImitationState, ImitationActions] {
   }, [thresholdAuto])
 
   useEffect(() => {
+    schedulePersist({
+      imitation: {
+        datasetJson: datasetRef.current!.exportJSON(),
+        modelJson: model ? model.exportWeights() : null,
+        threshold,
+        thresholdAuto,
+        bestEvalScore,
+        evalRunCount,
+        lossHistory,
+        finalLoss,
+      },
+    })
+  }, [
+    model,
+    datasetSize,
+    datasetBalance,
+    threshold,
+    thresholdAuto,
+    bestEvalScore,
+    evalRunCount,
+    lossHistory,
+    finalLoss,
+  ])
+
+  /* eslint-disable react-hooks/set-state-in-effect -- PRF metrics from model + dataset + threshold */
+  useEffect(() => {
     const m = model
-    const samples = datasetRef.current.getSamples()
+    const samples = datasetRef.current!.getSamples()
     if (!m || samples.length === 0) {
       setMetrics(null)
       return
@@ -203,6 +278,7 @@ export function useImitation(): [ImitationState, ImitationActions] {
     const mtr = computePRF1(m, samples, threshold)
     setMetrics(mtr)
   }, [model, datasetSize, datasetBalance, threshold])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const reportEvalScore = useCallback((score: number) => {
     setEvalRunCount((c) => c + 1)

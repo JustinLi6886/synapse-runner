@@ -1,16 +1,15 @@
 import { useState, useRef, useEffect } from "react"
 import { cn } from "@/lib/utils"
-import { ChartContainer } from "./chart-container"
 import { InfoTooltip } from "./info-tooltip"
-import { mockState, fitnessData } from "@/lib/mock-data"
 import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
 import type { PolicyGradientState, PolicyGradientActions } from "@/hooks/usePolicyGradient"
+import { EVOLUTION_MAX_SCORE, type EvolutionState, type EvolutionActions } from "@/hooks/useEvolution"
 
 interface TrainingControlsProps {
   activeMode: string
-  scoreHistory?: { name: string; value: number }[]
   imitation?: [ImitationState, ImitationActions]
   policyGradient?: [PolicyGradientState, PolicyGradientActions]
+  evolution?: [EvolutionState, EvolutionActions]
   isHeadless?: boolean
   onPolicyGradientEvaluate?: () => void
 }
@@ -72,45 +71,6 @@ function SliderInput({
   )
 }
 
-function NumberInput({ label, value, id }: { label: string; value: number | string; id: string }) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={id} className="text-[11px] font-medium text-muted-foreground">
-        {label}
-      </label>
-      <input
-        id={id}
-        type="text"
-        defaultValue={value}
-        aria-label={label}
-        className={cn(
-          "rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-mono text-card-foreground tabular-nums",
-          "transition-colors",
-          "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary",
-          "placeholder:text-muted-foreground/50"
-        )}
-      />
-    </div>
-  )
-}
-
-function TrainButton({ label }: { label: string }) {
-  return (
-    <button
-      aria-label={label}
-      className={cn(
-        "w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground",
-        "transition-all",
-        "hover:bg-primary/90",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-        "active:scale-[0.98]"
-      )}
-    >
-      {label}
-    </button>
-  )
-}
-
 function StatBlock({ label, value, color = "text-primary" }: { label: string; value: string | number; color?: string }) {
   return (
     <div className="flex items-center justify-between rounded-lg bg-secondary p-3">
@@ -135,10 +95,11 @@ function ImitationControls({ imitation }: { imitation?: [ImitationState, Imitati
   const fileInputRef = useRef<HTMLInputElement>(null)
   const hasAutoAppliedRef = useRef(false)
 
-  if (!imitation) return null
-  const [state, actions] = imitation
+  const state = imitation?.[0]
+  const actions = imitation?.[1]
 
   useEffect(() => {
+    if (!state || !actions) return
     if (state.datasetSize === 0) {
       hasAutoAppliedRef.current = false
       return
@@ -152,7 +113,9 @@ function ImitationControls({ imitation }: { imitation?: [ImitationState, Imitati
       setBatchSize(b)
       actions.setThreshold(t)
     }
-  }, [state.datasetSize, state.datasetBalance.jump, state.datasetBalance.noop, actions])
+  }, [state?.datasetSize, state?.datasetBalance.jump, state?.datasetBalance.noop, state, actions])
+
+  if (!state || !actions) return null
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -350,11 +313,12 @@ function ImitationControls({ imitation }: { imitation?: [ImitationState, Imitati
 }
 
 function PolicyGradientControls({ policyGradient: pg, isHeadless, onPolicyGradientEvaluate }: { policyGradient?: [PolicyGradientState, PolicyGradientActions]; isHeadless?: boolean; onPolicyGradientEvaluate?: () => void }) {
-  const [gamma, setGamma] = useState(0.99)
-  const [lr, setLr] = useState(0.01)
+  const [gamma, setGamma] = useState(0.95)
+  const [lr, setLr] = useState(0.003)
   const [episodesPerUpdate, setEpisodesPerUpdate] = useState(32)
   const [updates, setUpdates] = useState(500)
   const [clipGrad, setClipGrad] = useState(2)
+  const [entropyCoef, setEntropyCoef] = useState(0.08)
 
   if (!pg) return null
   const [state, actions] = pg
@@ -363,7 +327,7 @@ function PolicyGradientControls({ policyGradient: pg, isHeadless, onPolicyGradie
     <div className="flex flex-col gap-4">
       <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
         <p className="text-sm text-muted-foreground leading-relaxed">
-          Policy Gradient (REINFORCE) learns by trial and error. Train runs episodes (optionally headless for speed), then updates the model. Evaluate to watch the agent play.
+          Learns by trial and error using REINFORCE. The agent plays episodes, collects rewards, then updates its policy. Toggle headless for faster training.
         </p>
       </div>
 
@@ -464,6 +428,18 @@ function PolicyGradientControls({ policyGradient: pg, isHeadless, onPolicyGradie
       />
 
       <SliderInput
+        label="Entropy"
+        value={entropyCoef}
+        min={0}
+        max={0.2}
+        step={0.01}
+        id="pg-entropy"
+        onChange={setEntropyCoef}
+        disabled={state.isTraining}
+        tooltip="Entropy bonus strength. Higher = more exploration. Set to 0 to disable entropy regularization entirely."
+      />
+
+      <SliderInput
         label="Sim Speed"
         value={state.simSpeed}
         min={1}
@@ -472,7 +448,7 @@ function PolicyGradientControls({ policyGradient: pg, isHeadless, onPolicyGradie
         id="pg-simspeed"
         onChange={actions.setSimSpeed}
         disabled={isHeadless}
-        tooltip={isHeadless ? "Only affects visual training. Headless runs at max speed." : "How fast the simulation runs when the agent plays (visual training only). 8x = 8 seconds of game per real second."}
+        tooltip={isHeadless ? "Only applies to visual training. Headless runs at max speed." : "Playback speed during visual training. Higher = faster training but harder to watch."}
       />
 
       <StatBlock label="Best Score" value={state.bestScore} color="text-accent" />
@@ -497,6 +473,7 @@ function PolicyGradientControls({ policyGradient: pg, isHeadless, onPolicyGradie
                   gamma,
                   learningRate: lr,
                   clipGrad,
+                  entropyCoef,
                 })
           }
           className={cn(
@@ -546,18 +523,183 @@ function PolicyGradientControls({ policyGradient: pg, isHeadless, onPolicyGradie
   )
 }
 
-function EvolutionControls() {
-  const { evolution } = mockState.training
+function EvolutionControls({ evolution: ev }: { evolution?: [EvolutionState, EvolutionActions] }) {
+  const [populationSize, setPopulationSize] = useState(50)
+  const [eliteCount, setEliteCount] = useState(5)
+  const [mutationSigma, setMutationSigma] = useState(0.1)
+  const [evalSeeds, setEvalSeeds] = useState(5)
+  const [generations, setGenerations] = useState(100)
+
+  if (!ev) return null
+  const [state, actions] = ev
+  const atMaxScore = state.bestFitness >= EVOLUTION_MAX_SCORE
+  const configLocked = state.isTraining || state.isEvaluating
+
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid grid-cols-2 gap-3">
-        <NumberInput label="Population Size" value={evolution.populationSize} id="pop-size" />
-        <NumberInput label="Elite Count" value={evolution.eliteCount} id="elite-count" />
+      <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+        <p className="text-sm text-muted-foreground leading-relaxed">
+          Maintains a population of networks, scores each one on full game runs, then breeds the best performers. No gradients — just survival of the fittest.
+        </p>
       </div>
-      <SliderInput label="Mutation Sigma" value={evolution.mutationSigma} min={0.01} max={0.5} step={0.01} id="mutation-sigma" />
-      <StatBlock label="Generation" value={evolution.generation} color="text-primary" />
-      <TrainButton label="Evolve" />
-      <ChartContainer data={fitnessData} label="Best Fitness" color="var(--chart-2)" />
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="ev-pop" className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+            Population
+            <InfoTooltip description="Number of networks per generation. Larger = more exploration but slower." />
+          </label>
+          <input
+            id="ev-pop"
+            type="number"
+            value={populationSize}
+            onChange={(e) => setPopulationSize(Math.max(4, Number(e.target.value)))}
+            disabled={configLocked}
+            className={cn(
+              "rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-mono text-card-foreground tabular-nums",
+              "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary",
+              configLocked && "opacity-50 cursor-not-allowed"
+            )}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="ev-elite" className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+            Elites
+            <InfoTooltip description="Top performers that survive unchanged to the next generation." />
+          </label>
+          <input
+            id="ev-elite"
+            type="number"
+            value={eliteCount}
+            onChange={(e) => setEliteCount(Math.max(1, Number(e.target.value)))}
+            disabled={configLocked}
+            className={cn(
+              "rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-mono text-card-foreground tabular-nums",
+              "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary",
+              configLocked && "opacity-50 cursor-not-allowed"
+            )}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="ev-seeds" className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+            Eval Seeds
+            <InfoTooltip description="How many obstacle layouts each network is tested on. Averaging prevents lucky runs from inflating scores." />
+          </label>
+          <input
+            id="ev-seeds"
+            type="number"
+            value={evalSeeds}
+            onChange={(e) => setEvalSeeds(Math.max(1, Number(e.target.value)))}
+            disabled={configLocked}
+            className={cn(
+              "rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-mono text-card-foreground tabular-nums",
+              "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary",
+              configLocked && "opacity-50 cursor-not-allowed"
+            )}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="ev-gens" className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+            Generations
+            <InfoTooltip description="How many generations to run this time. Evolve again adds that many more from the current population; progress shows the cumulative target." />
+          </label>
+          <input
+            id="ev-gens"
+            type="number"
+            value={generations}
+            onChange={(e) => setGenerations(Math.max(1, Number(e.target.value)))}
+            disabled={configLocked}
+            className={cn(
+              "rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-mono text-card-foreground tabular-nums",
+              "focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary",
+              configLocked && "opacity-50 cursor-not-allowed"
+            )}
+          />
+        </div>
+      </div>
+
+      <SliderInput
+        label="Mutation Sigma"
+        value={mutationSigma}
+        min={0.01}
+        max={0.5}
+        step={0.01}
+        id="ev-sigma"
+        onChange={setMutationSigma}
+        disabled={configLocked}
+        tooltip="How much noise to add when mutating child weights. Higher explores more, lower fine-tunes."
+      />
+
+      <div className="grid grid-cols-2 gap-3">
+        <StatBlock label="Best Ever" value={state.bestFitness || "—"} color="text-accent" />
+        <StatBlock label="Generation" value={state.generation > 0 ? `${state.generation}/${state.targetGenerations}` : "—"} color="text-accent" />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <StatBlock label="Gen Best" value={state.genBestFitness || "—"} color="text-primary" />
+        <StatBlock label="Gen Avg" value={state.avgFitness || "—"} color="text-primary" />
+      </div>
+
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() =>
+            state.isTraining
+              ? actions.stopTraining()
+              : actions.train({ populationSize, eliteCount, mutationSigma, generations, evalSeeds })
+          }
+          disabled={!state.isTraining && (atMaxScore || state.isEvaluating)}
+          title={
+            atMaxScore && !state.isTraining
+              ? "Score cap reached — Clear to start a new run"
+              : state.isEvaluating && !state.isTraining
+                ? "Stop evaluation first"
+                : undefined
+          }
+          className={cn(
+            "flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all active:scale-[0.98]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            state.isTraining
+              ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              : "bg-primary text-primary-foreground hover:bg-primary/90",
+            !state.isTraining && (atMaxScore || state.isEvaluating) && "opacity-50 cursor-not-allowed"
+          )}
+        >
+          {state.isTraining ? "Stop" : atMaxScore ? "Max score" : "Evolve"}
+        </button>
+        <button
+          type="button"
+          onClick={actions.clearProgress}
+          disabled={state.isTraining || state.isEvaluating || (!state.model && state.generation === 0)}
+          className={cn(
+            "rounded-lg px-4 py-2.5 text-sm font-semibold transition-all active:scale-[0.98]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20",
+            "disabled:opacity-40 disabled:cursor-not-allowed"
+          )}
+        >
+          Clear
+        </button>
+        <button
+          type="button"
+          onClick={() => actions.setEvaluating(!state.isEvaluating)}
+          disabled={!state.model || state.isTraining}
+          className={cn(
+            "rounded-lg px-4 py-2.5 text-sm font-semibold transition-all active:scale-[0.98]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            state.model && !state.isTraining
+              ? state.isEvaluating
+                ? "border border-accent bg-accent/10 text-accent"
+                : "bg-accent text-accent-foreground hover:bg-accent/90"
+              : "border border-border bg-card text-card-foreground hover:bg-secondary/80",
+            "disabled:opacity-40 disabled:cursor-not-allowed"
+          )}
+        >
+          {state.isEvaluating ? "Stop" : "Evaluate"}
+        </button>
+      </div>
     </div>
   )
 }
@@ -611,14 +753,14 @@ function HumanControls({ imitation }: { imitation?: [ImitationState, ImitationAc
   )
 }
 
-export function TrainingControls({ activeMode, imitation, policyGradient, isHeadless, onPolicyGradientEvaluate }: TrainingControlsProps) {
+export function TrainingControls({ activeMode, imitation, policyGradient, evolution, isHeadless, onPolicyGradientEvaluate }: TrainingControlsProps) {
   switch (activeMode) {
     case "imitation":
       return <ImitationControls imitation={imitation} />
     case "policy-gradient":
       return <PolicyGradientControls policyGradient={policyGradient} isHeadless={isHeadless} onPolicyGradientEvaluate={onPolicyGradientEvaluate} />
     case "evolution":
-      return <EvolutionControls />
+      return <EvolutionControls evolution={evolution} />
     default:
       return <HumanControls imitation={imitation} />
   }

@@ -13,7 +13,7 @@ export interface UseGameRunnerOptions {
   started?: boolean
   simSpeed?: number
   onStep?: (obs: number[], action: Action, state: GameState) => void
-  onStepComplete?: (obs: number[], action: Action, logProb: number, reward: number) => void
+  onStepComplete?: (obs: number[], action: Action, logProb: number, reward: number, grounded: boolean) => void
 }
 
 export function useGameRunner({ controller, paused, viewWidth = 800, started = true, simSpeed = 1, onStep, onStepComplete }: UseGameRunnerOptions) {
@@ -39,13 +39,14 @@ export function useGameRunner({ controller, paused, viewWidth = 800, started = t
 
   const reset = useCallback((seed?: number) => {
     const w = viewWidthRef.current
-    const next = createGameState(w, seed ?? Date.now())
+    const usedSeed = seed ?? Date.now()
+    const next = createGameState(w, usedSeed)
     stateRef.current = next
     setState(next)
     accumRef.current = 0
     stepCountRef.current = 0
     episodeEndFiredRef.current = false
-    controllerRef.current.reset?.()
+    controllerRef.current.reset?.(usedSeed)
   }, [])
 
   useEffect(() => {
@@ -84,12 +85,13 @@ export function useGameRunner({ controller, paused, viewWidth = 800, started = t
 
       while (accumRef.current >= FIXED_DT) {
         const obs = getObservation(current)
+        const grounded = current.playerY <= 0
         const action: Action = controllerRef.current.decideAction(current, obs)
         const logProb = controllerRef.current.getLastLogProb?.() ?? 0
         onStepRef.current?.(obs, action, current)
 
         const result = step(current, action, FIXED_DT)
-        onStepCompleteRef.current?.(obs, action, logProb, result.reward)
+        onStepCompleteRef.current?.(obs, action, logProb, result.reward, grounded)
         current = result.state
         stateRef.current = current
         accumRef.current -= FIXED_DT

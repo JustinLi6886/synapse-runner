@@ -1,6 +1,7 @@
 import { useRef } from "react"
-import { Download, Upload, Hash, Activity, PanelLeftClose, PanelLeftOpen } from "lucide-react"
+import { Download, Upload, Activity, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { APP_VERSION } from "@/version"
 import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
 import type { PolicyGradientState, PolicyGradientActions } from "@/hooks/usePolicyGradient"
 
@@ -10,12 +11,11 @@ interface TopNavProps {
   onHeadlessToggle: () => void
   leftPanelOpen: boolean
   onLeftPanelToggle: () => void
-  seed?: number | null
   imitation?: [ImitationState, ImitationActions]
   policyGradient?: [PolicyGradientState, PolicyGradientActions]
 }
 
-export function TopNav({ activeMode, isHeadless, onHeadlessToggle, leftPanelOpen, onLeftPanelToggle, seed, imitation, policyGradient }: TopNavProps) {
+export function TopNav({ activeMode, isHeadless, onHeadlessToggle, leftPanelOpen, onLeftPanelToggle, imitation, policyGradient }: TopNavProps) {
   const modelFileRef = useRef<HTMLInputElement>(null)
   const pgModelFileRef = useRef<HTMLInputElement>(null)
   const showTrainingControls = activeMode === "policy-gradient" || activeMode === "evolution"
@@ -49,16 +49,11 @@ export function TopNav({ activeMode, isHeadless, onHeadlessToggle, leftPanelOpen
           <span className="text-sm font-semibold tracking-tight text-foreground">
             SYNAPSE RUNNER
           </span>
-        </div>
-
-        <div className="h-4 w-px bg-border" aria-hidden="true" />
-
-        <div className="flex items-center gap-1.5 rounded-md bg-secondary px-2.5 py-1">
-          <Hash className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
-          <span className="text-[11px] font-mono text-muted-foreground tabular-nums">
-            seed: {seed ?? "—"}
+          <span className="text-[10px] font-medium tabular-nums text-muted-foreground" title={`Version ${APP_VERSION}`}>
+            v{APP_VERSION}
           </span>
         </div>
+
       </div>
 
       {(showTrainingControls || showImitationModelControls || showPgModelControls) && (
@@ -170,32 +165,6 @@ export function TopNav({ activeMode, isHeadless, onHeadlessToggle, leftPanelOpen
                 <Upload className="h-3.5 w-3.5" aria-hidden="true" />
                 Export Model
               </button>
-            </>
-          ) : showTrainingControls ? (
-            <>
-          <button
-            aria-label="Import configuration"
-            className={cn(
-              "flex items-center gap-1.5 rounded-md bg-secondary px-3 py-1.5 text-[11px] font-semibold text-secondary-foreground transition-colors",
-              "hover:bg-secondary/80",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            )}
-          >
-            <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-            Import
-          </button>
-
-          <button
-            aria-label="Export run data"
-            className={cn(
-              "flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[11px] font-semibold text-primary-foreground transition-colors",
-              "hover:bg-primary/90",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            )}
-          >
-            <Download className="h-3.5 w-3.5" aria-hidden="true" />
-            Export
-          </button>
             </>
           ) : null}
         </div>

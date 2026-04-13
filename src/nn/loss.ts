@@ -15,8 +15,3 @@ export function binaryCrossEntropyBatch(
   }
   return sum / predictions.length
 }
-
-export function binaryCrossEntropyDerivative(p: number, y: number): number {
-  const pc = Math.max(EPS, Math.min(1 - EPS, p))
-  return (pc - y) / (pc * (1 - pc))
-}

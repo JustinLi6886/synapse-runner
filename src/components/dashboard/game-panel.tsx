@@ -1,42 +1,30 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from "react"
 import { Monitor } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { mockState } from "@/lib/mock-data"
 import { useGameRunner } from "@/hooks/useGameRunner"
 import { HumanController, ModelController, SamplingModelController } from "@/ai/controller"
 import { GAME_CONFIG } from "@/game/config"
-import { getObservation } from "@/game/engine"
+import { createGameState, step, getObservation } from "@/game/engine"
 import { ObservationInspector } from "./observation-inspector"
 import { ChartContainer } from "./chart-container"
 import { InfoTooltip } from "./info-tooltip"
 import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
 import type { PolicyGradientState, PolicyGradientActions } from "@/hooks/usePolicyGradient"
+import type { EvolutionState, EvolutionActions } from "@/hooks/useEvolution"
 import type { Action } from "@/game/types"
-
-export interface HumanLiveMetrics {
-  score: number
-  bestScore: number
-  episode: number
-  speed: string | number
-  jumpProb: string
-  action: string
-  duration: string
-  seed: number | null
-  scoreHistory: { name: string; value: number }[]
-}
 
 interface GamePanelProps {
   activeMode: string
   isHeadless: boolean
-  onHumanMetricsChange?: (metrics: HumanLiveMetrics) => void
   imitation?: [ImitationState, ImitationActions]
   policyGradient?: [PolicyGradientState, PolicyGradientActions]
+  evolution?: [EvolutionState, EvolutionActions]
 }
 
 const modeLabels: Record<string, string> = {
   human: "Human",
   imitation: "Imitation Learning",
-  "policy-gradient": "Policy Gradient",
+  "policy-gradient": "Policy Gradient (RL)",
   evolution: "Evolution Strategy",
 }
 
@@ -64,9 +52,144 @@ function StatusBadge({ label, color, pulse = false }: { label: string; color: "p
   )
 }
 
-export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitation, policyGradient }: GamePanelProps) {
-  const { metrics } = mockState
-  const progressPct = Math.round((metrics.episode / metrics.totalEpisodes) * 100)
+const ARENA_COLORS = [
+  '#facc15', '#3b82f6', '#06b6d4', '#22c55e', '#a78bfa',
+  '#f97316', '#ec4899', '#14b8a6', '#f43f5e', '#8b5cf6',
+  '#84cc16', '#fb923c',
+]
+
+function EvolutionArena({ agents, threshold, onAllDead, overlay }: {
+  agents: { predictOnly(obs: number[]): number }[]
+  threshold: number
+  onAllDead: () => void
+  overlay?: React.ReactNode
+}) {
+  const count = Math.min(12, agents.length)
+  const statesRef = useRef<ReturnType<typeof createGameState>[]>([])
+  const agentsRef = useRef(agents)
+  const onAllDeadRef = useRef(onAllDead)
+  const hasFiredRef = useRef(false)
+  const [, setTick] = useState(0)
+
+  useEffect(() => { onAllDeadRef.current = onAllDead }, [onAllDead])
+
+  useEffect(() => {
+    agentsRef.current = agents
+    hasFiredRef.current = false
+    const baseSeed = Date.now()
+    statesRef.current = agents.slice(0, count).map((_, i) =>
+      createGameState(800, baseSeed + i * 997)
+    )
+  }, [agents, count])
+
+  useEffect(() => {
+    if (count === 0) return
+    let rafId: number
+    const loop = () => {
+      let allDead = true
+      for (let i = 0; i < count; i++) {
+        const st = statesRef.current[i]
+        if (!st || st.gameOver) continue
+        allDead = false
+        const obs = getObservation(st)
+        const grounded = st.playerY <= 0
+        let action: Action = 0
+        if (grounded && agentsRef.current[i]) {
+          if (agentsRef.current[i].predictOnly(obs) >= threshold) action = 1
+        }
+        statesRef.current[i] = step(st, action, 1 / 60).state
+      }
+      if (allDead && !hasFiredRef.current && statesRef.current.length > 0) {
+        hasFiredRef.current = true
+        setTick(t => t + 1)
+        onAllDeadRef.current()
+        return
+      }
+      setTick(t => t + 1)
+      rafId = requestAnimationFrame(loop)
+    }
+    rafId = requestAnimationFrame(loop)
+    return () => cancelAnimationFrame(rafId)
+  }, [agents, count, threshold])
+
+  const idle = count === 0
+
+  return (
+    <div className="relative w-full h-full">
+      <div className="grid grid-cols-3 grid-rows-4 gap-0 w-full h-full">
+        {Array.from({ length: 12 }, (_, i) => {
+          const hasAgent = i < count
+          const state = hasAgent ? statesRef.current[i] : undefined
+          const color = ARENA_COLORS[i]
+          const grounded = idle || (state && !state.gameOver && state.playerY <= 0)
+          const inAir = !idle && state && !state.gameOver && state.playerY > 0
+
+          return (
+            <div key={i} className="relative bg-[#0A0C0F] overflow-hidden">
+              <div className="absolute bottom-6 left-0 right-0 h-px bg-border" />
+              <div className="absolute bottom-0 left-0 right-0 h-6 border-t border-border/50" />
+
+              <div
+                className="absolute"
+                style={{
+                  left: `${(GAME_CONFIG.playerX / 800) * 100}%`,
+                  bottom: `calc(1.5rem + 4px)`,
+                  transform: state ? `translateY(-${state.playerY * 0.5}px)` : undefined,
+                }}
+              >
+                <div
+                  className="h-5 w-[14px] rounded-sm"
+                  style={{ backgroundColor: color, boxShadow: `0 0 10px ${color}50` }}
+                />
+                <div
+                  className={`absolute -bottom-[6px] left-px h-[7px] w-[4px] rounded-sm origin-top ${grounded ? "animate-walk-left" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
+                  style={{ backgroundColor: color, opacity: 0.5 }}
+                />
+                <div
+                  className={`absolute -bottom-[6px] right-px h-[7px] w-[4px] rounded-sm origin-top ${grounded ? "animate-walk-right" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
+                  style={{ backgroundColor: color, opacity: 0.5 }}
+                />
+              </div>
+
+              {state && state.obstacles.map((o) => (
+                <div
+                  key={o.id}
+                  className="absolute bottom-6 rounded-sm bg-destructive/70"
+                  style={{
+                    left: `${(o.x / 800) * 100}%`,
+                    width: `${Math.max((o.width / 800) * 100, 0.5)}%`,
+                    height: `${Math.min(o.height * 0.5, 32)}px`,
+                  }}
+                />
+              ))}
+
+              <span
+                className="absolute top-2.5 left-2 text-[9px] font-bold leading-none"
+                style={{ color }}
+              >
+                #{i + 1}
+              </span>
+              <span className="absolute top-2.5 right-2 text-[9px] font-mono text-foreground tabular-nums leading-none">
+                {Math.floor(state?.distance ?? 0).toLocaleString()}
+              </span>
+
+              {state?.gameOver && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="text-[8px] tracking-wider text-foreground/50" style={{ fontFamily: "'Press Start 2P', monospace" }}>
+                    END
+                  </span>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {overlay}
+    </div>
+  )
+}
+
+export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, evolution }: GamePanelProps) {
 
   const sceneRef = useRef<HTMLDivElement>(null)
   const [sceneWidth, setSceneWidth] = useState(800)
@@ -83,34 +206,69 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
 
   const [imitState, imitActions] = imitation ?? [undefined, undefined]
   const [pgState, pgActions] = policyGradient ?? [undefined, undefined]
+  const [evState, evActions] = evolution ?? [undefined, undefined]
 
   const humanCtrl = useMemo(() => new HumanController(), [])
-  const modelCtrlRef = useRef<ModelController | null>(null)
-  const samplingCtrlRef = useRef<SamplingModelController | null>(null)
 
-  const predictRef = useRef<((obs: number[]) => number) | null>(null)
-  useEffect(() => {
-    const model = activeMode === "imitation" ? imitState?.model : activeMode === "policy-gradient" ? pgState?.model : null
-    const threshold = activeMode === "imitation" ? imitState?.threshold : activeMode === "policy-gradient" ? pgState?.threshold : 0.5
-    if (model) {
-      predictRef.current = (obs: number[]) => model.predict(obs)[0]
-      modelCtrlRef.current = new ModelController(predictRef.current, threshold)
-      samplingCtrlRef.current = new SamplingModelController(predictRef.current)
-    } else {
-      modelCtrlRef.current = null
-      samplingCtrlRef.current = null
-    }
-  }, [activeMode, imitState?.model, imitState?.threshold, pgState?.model, pgState?.threshold])
+  const activeModel = activeMode === "imitation" ? imitState?.model
+    : activeMode === "policy-gradient" ? pgState?.model
+    : activeMode === "evolution" ? evState?.model
+    : null
+  const activeThreshold = activeMode === "imitation" ? imitState?.threshold
+    : activeMode === "policy-gradient" ? pgState?.threshold
+    : activeMode === "evolution" ? evState?.threshold
+    : 0.5
+  const isEvolution = activeMode === "evolution"
+  const modelCtrl = useMemo(() => {
+    if (!activeModel) return null
+    const predict = (obs: number[]) => activeModel.predict(obs)[0]
+    return new ModelController(predict, activeThreshold, !isEvolution)
+  }, [activeModel, activeThreshold, isEvolution])
+  const samplingCtrl = useMemo(() => {
+    if (!activeModel) return null
+    const predict = (obs: number[]) => activeModel.predict(obs)[0]
+    return new SamplingModelController(predict)
+  }, [activeModel])
 
   const isHuman = activeMode === "human"
   const isImitationEval = activeMode === "imitation" && !!imitState?.isEvaluating && !!imitState?.model
   const isPolicyGradientEval = activeMode === "policy-gradient" && !!pgState?.isEvaluating && !!pgState?.model
   const isPolicyGradientTraining = activeMode === "policy-gradient" && !!pgState?.isTraining && !isHeadless && !!pgState?.model
+  const isPolicyGradientRunFinished =
+    activeMode === "policy-gradient" &&
+    !!pgState?.model &&
+    !pgState?.isTraining &&
+    !pgState?.isEvaluating &&
+    (pgState?.totalUpdates ?? 0) > 0 &&
+    (pgState?.updateCount ?? 0) >= (pgState?.totalUpdates ?? 0)
+  const showPolicyGradientReadyOnCanvas = isPolicyGradientRunFinished && !isHeadless
+  const isPolicyGradientHeadlessStoppedMidRun =
+    activeMode === "policy-gradient" &&
+    isHeadless &&
+    !!pgState?.model &&
+    !pgState?.isTraining &&
+    !pgState?.isEvaluating &&
+    (pgState?.totalUpdates ?? 0) > 0 &&
+    (pgState?.updateCount ?? 0) < (pgState?.totalUpdates ?? 0)
+  const isEvolutionEval = activeMode === "evolution" && !evState?.isTraining && !!evState?.isEvaluating && !!evState?.model
+  const isEvolutionSinglePlayerReady =
+    activeMode === "evolution" &&
+    !!evState?.runComplete &&
+    !evState?.isTraining &&
+    !evState?.isEvaluating &&
+    !!evState?.model
+  const isEvolutionArena =
+    activeMode === "evolution" && !isHeadless && !isEvolutionEval && !isEvolutionSinglePlayerReady
+  const isEvolutionShowcase = isEvolutionArena && !!evState?.isTraining && !!evState?.showcaseActive && evState!.elites.length > 0
+  const isEvolutionEvaluating = isEvolutionArena && !!evState?.isTraining && !evState?.showcaseActive
+  const isEvolutionIdleWithModel =
+    isEvolutionArena && !evState?.isTraining && !evState?.isEvaluating && !!evState?.model && !evState?.runComplete
+  const isEvolutionIdleNoModel = isEvolutionArena && !evState?.isTraining && !evState?.isEvaluating && !evState?.model
   const controller =
-    isPolicyGradientTraining && samplingCtrlRef.current
-      ? samplingCtrlRef.current
-      : (isImitationEval || isPolicyGradientEval) && modelCtrlRef.current
-        ? modelCtrlRef.current
+    isPolicyGradientTraining && samplingCtrl
+      ? samplingCtrl
+      : (isImitationEval || isPolicyGradientEval || isEvolutionEval) && modelCtrl
+        ? modelCtrl
         : humanCtrl
 
   useEffect(() => {
@@ -133,10 +291,10 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
   }, [imitState?.isRecording, imitActions])
 
   useEffect(() => {
-    if (activeMode !== "human" && !isImitationEval && !isPolicyGradientEval && !isPolicyGradientTraining) {
+    if (activeMode !== "human" && !isImitationEval && !isPolicyGradientEval && !isPolicyGradientTraining && !isEvolutionEval) {
       setGameStarted(false)
     }
-  }, [activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining])
+  }, [activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, isEvolutionEval])
 
   useEffect(() => {
     if (activeMode !== "human") return
@@ -159,7 +317,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
   }
 
   useEffect(() => {
-    if ((!isHuman && activeMode !== "imitation" && activeMode !== "policy-gradient") || (isHeadless && !isPolicyGradientTraining)) return
+    if ((!isHuman && activeMode !== "imitation" && activeMode !== "policy-gradient" && activeMode !== "evolution") || (isHeadless && !isPolicyGradientTraining)) return
     const el = sceneRef.current
     if (!el) return
     const update = () => setSceneWidth(el.clientWidth)
@@ -169,16 +327,16 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
     return () => ro.disconnect()
   }, [isHuman, activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, isHeadless])
 
-  const trajectoryRef = useRef<{ obs: number[]; action: number; logProb: number; reward: number }[]>([])
+  const trajectoryRef = useRef<{ obs: number[]; action: number; logProb: number; reward: number; grounded: boolean }[]>([])
   const onStepComplete = useCallback(
-    (obs: number[], action: number, logProb: number, reward: number) => {
+    (obs: number[], action: number, logProb: number, reward: number, grounded: boolean) => {
       if (!isPolicyGradientTraining) return
-      trajectoryRef.current.push({ obs, action, logProb, reward })
+      trajectoryRef.current.push({ obs, action, logProb, reward, grounded })
     },
     [isPolicyGradientTraining]
   )
 
-  const showGame = activeMode === "human" || isImitationEval || isPolicyGradientEval || isPolicyGradientTraining
+  const showGame = activeMode === "human" || isImitationEval || isPolicyGradientEval || isPolicyGradientTraining || isEvolutionEval
   const agentSimSpeed = isPolicyGradientTraining ? (pgState?.simSpeed ?? 1) : 1
   const runner = useGameRunner({
     controller,
@@ -216,13 +374,14 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
   }, [isPolicyGradientTraining, gameStarted, runner.reset])
 
   useEffect(() => {
-    if (!isImitationEval && !isPolicyGradientEval && !isPolicyGradientTraining) return
+    if (!isImitationEval && !isPolicyGradientEval && !isPolicyGradientTraining && !isEvolutionEval) return
     if (isPolicyGradientTraining && runner.gameOver && pgActions?.reportEpisodeComplete) {
       const trajectory = trajectoryRef.current.map((t) => ({
         obs: t.obs,
         action: t.action as 0 | 1,
         logProb: t.logProb,
         reward: t.reward,
+        grounded: t.grounded,
       }))
       const nextSeed = pgActions.reportEpisodeComplete(trajectory, runner.score)
       trajectoryRef.current = []
@@ -236,7 +395,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
       }
       return
     }
-    if (!isImitationEval && !isPolicyGradientEval) return
+    if (!isImitationEval && !isPolicyGradientEval && !isEvolutionEval) return
     if (!gameStarted) {
       setGameStarted(true)
       setRunCount((c) => c + 1)
@@ -253,7 +412,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
       }, 0)
       return () => clearTimeout(id)
     }
-  }, [isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, gameStarted, runner.gameOver, runner.score, runner.reset, imitActions, pgActions, runCount])
+  }, [isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, isEvolutionEval, gameStarted, runner.gameOver, runner.score, runner.reset, imitActions, pgActions, runCount])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -303,34 +462,6 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
     }
   }, [isHuman, gameStarted, runner.gameOver])
 
-  useEffect(() => {
-    if (!isHuman || !onHumanMetricsChange) return
-    const state = runner.state
-    const inAir = state && (state.playerY > 0 || state.playerVy > 0)
-    onHumanMetricsChange({
-      score: runner.score,
-      bestScore: runner.bestScore,
-      episode: runCount,
-      speed: runner.speed.toFixed(3),
-      jumpProb: "—",
-      action: inAir ? "JUMP" : "RUN",
-      duration: formatDuration(runDurationSeconds),
-      seed: state?.seed ?? null,
-      scoreHistory,
-    })
-  }, [
-    isHuman,
-    onHumanMetricsChange,
-    runner.score,
-    runner.bestScore,
-    runner.speed,
-    runCount,
-    runner.state?.playerY,
-    runner.state?.playerVy,
-    runDurationSeconds,
-    scoreHistory,
-  ])
-
   return (
     <div className="flex flex-1 flex-col min-h-0 gap-4">
       <div className="flex shrink-0 items-center gap-2">
@@ -342,20 +473,14 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
                 ? "Game Over"
                 : gameStarted
                   ? "Playing"
-                  : "Stopped"
-              : activeMode === "imitation" && imitState?.isEvaluating
+                  : "Ready"
+              : (activeMode === "imitation" && imitState?.isEvaluating)
+                  || (activeMode === "policy-gradient" && pgState?.isEvaluating)
+                  || (activeMode === "evolution" && evState?.isEvaluating)
                 ? "Evaluating"
-                : activeMode === "policy-gradient" && pgState?.isEvaluating
-                  ? "Evaluating"
-                  : imitState?.isTraining
-                    ? "Training"
-                    : pgState?.isTraining
-                      ? "Training"
-                      : activeMode === "imitation"
-                        ? "Ready"
-                        : activeMode === "policy-gradient"
-                          ? "Ready"
-                          : "Training"
+                : imitState?.isTraining || pgState?.isTraining || evState?.isTraining
+                  ? "Training"
+                  : "Ready"
           }
           color={
             activeMode === "human"
@@ -373,15 +498,61 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
         role="img"
         aria-label="Game simulation canvas"
       >
-        {isHeadless ? (
+        {isEvolutionArena ? (
+          <EvolutionArena
+            agents={isEvolutionShowcase ? evState!.elites : []}
+            threshold={evState?.threshold ?? 0.5}
+            onAllDead={evActions?.reportArenaComplete ?? (() => {})}
+            overlay={
+              isEvolutionEvaluating ? (
+                <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center gap-2 pointer-events-none">
+                  <div className="flex items-center gap-2">
+                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:150ms]" />
+                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:300ms]" />
+                  </div>
+                  <span className="text-sm font-medium text-foreground/70">
+                    Evaluating generation {(evState?.generation ?? 0) + 1}...
+                  </span>
+                </div>
+              ) : isEvolutionIdleWithModel ? (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
+                    Training stopped — click Evolve to resume
+                  </span>
+                </div>
+              ) : isEvolutionIdleNoModel ? (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
+                    Click Evolve to start training a population
+                  </span>
+                </div>
+              ) : undefined
+            }
+          />
+        ) : isHeadless &&
+          (activeMode === "evolution" ||
+            pgState?.isTraining ||
+            pgState?.isEvaluating ||
+            (activeMode === "policy-gradient" && isPolicyGradientRunFinished) ||
+            isPolicyGradientHeadlessStoppedMidRun) &&
+          !(activeMode === "evolution" && evState?.runComplete && !evState?.isTraining) ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 bg-card/80 backdrop-blur-sm">
             <Monitor className="h-10 w-10 text-muted-foreground/40" aria-hidden="true" />
             <div className="flex flex-col items-center gap-1">
               <span className="text-sm font-medium text-muted-foreground">
-                Training in headless mode
+                {activeMode === "policy-gradient" && isPolicyGradientRunFinished
+                  ? "Headless on"
+                  : activeMode === "policy-gradient" && isPolicyGradientHeadlessStoppedMidRun
+                    ? "Training stopped"
+                    : "Running headless"}
               </span>
-              <span className="text-xs text-muted-foreground/60">
-                Canvas rendering disabled for performance
+              <span className="text-xs text-muted-foreground/60 text-center max-w-xs px-2">
+                {activeMode === "policy-gradient" && isPolicyGradientRunFinished
+                  ? "Turn off Headless to see the canvas and Evaluate"
+                  : activeMode === "policy-gradient" && isPolicyGradientHeadlessStoppedMidRun
+                    ? "Turn off Headless to view progress, or Continue Training"
+                    : "Visual output paused for faster training"}
               </span>
             </div>
             <div className="mt-2 flex items-center gap-2" aria-hidden="true">
@@ -393,7 +564,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
         ) : (
           <div className="flex h-full flex-col items-center justify-center">
             <div
-              ref={isHuman || activeMode === "imitation" || activeMode === "policy-gradient" ? sceneRef : undefined}
+              ref={isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution" ? sceneRef : undefined}
               className="relative w-full h-full bg-[#0A0C0F] flex items-end"
             >
               <div className="absolute bottom-12 left-0 right-0 h-px bg-border" />
@@ -431,7 +602,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
                 )}
                 <div className="h-8 w-6 rounded-sm bg-primary shadow-[0_0_12px_rgba(59,130,246,0.3)]" />
                 {(() => {
-                  const isActive = showGame || activeMode === "imitation" || activeMode === "policy-gradient"
+                  const isActive = showGame || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution"
                   const grounded = isActive && runner.state && !runner.gameOver && (runner.state.playerY <= 0)
                   const inAir = isActive && runner.state && !runner.gameOver && runner.state.playerY > 0
                   return (
@@ -447,7 +618,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
                 })()}
               </div>
 
-              {(isImitationEval || isPolicyGradientEval) && (
+              {(isImitationEval || isPolicyGradientEval || isEvolutionEval) && (
                 <div
                   className="absolute flex flex-col items-center gap-0.5 pointer-events-none"
                   style={{
@@ -460,14 +631,14 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
                     Jump Probability
                   </span>
                   <span className="text-2xl font-mono font-bold text-foreground/80 tabular-nums">
-                    {runner.state && ((isImitationEval && imitState?.model) || (isPolicyGradientEval && pgState?.model))
-                      ? (imitState?.model ?? pgState?.model)!.predict(getObservation(runner.state))[0].toFixed(3)
+                    {runner.state && activeModel
+                      ? activeModel.predict(getObservation(runner.state))[0].toFixed(3)
                       : "0.000"}
                   </span>
                 </div>
               )}
 
-              {(showGame || activeMode === "imitation" || activeMode === "policy-gradient") && runner.state ? (
+              {(showGame || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") && runner.state ? (
                 runner.state.obstacles.map((o) => (
                   <div
                     key={o.id}
@@ -513,7 +684,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
               )}
 
               <div className="absolute top-4 right-4 flex items-start gap-4">
-                {(isHuman || activeMode === "imitation" || activeMode === "policy-gradient") && (
+                {(isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") && (
                   <div className="flex flex-col items-end gap-1">
                     <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
                       HI
@@ -599,10 +770,26 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                   <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
                     {imitState?.model
-                      ? "Model ready — click Evaluate in the panel to watch it play"
+                      ? "Model ready — click Evaluate to watch it play"
                       : imitState && imitState.datasetSize > 0
-                        ? "Dataset recorded — click Train Model in the panel"
+                        ? "Dataset recorded — click Train Model to begin"
                         : "Play in Human mode with Record on to collect training data"}
+                  </span>
+                </div>
+              )}
+
+              {isEvolutionSinglePlayerReady && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                  <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
+                    Best model ready — click Evaluate to watch it play
+                  </span>
+                </div>
+              )}
+
+              {showPolicyGradientReadyOnCanvas && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                  <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
+                    Policy ready — click Evaluate to watch it play
                   </span>
                 </div>
               )}
@@ -647,48 +834,59 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
               Updates Progress
-              <InfoTooltip description="Policy updates completed. Each update uses Episodes/Update episodes." />
+              <InfoTooltip description="Updates done vs cumulative target — Continue adds the next batch to the total. Clear resets all." />
             </span>
             <span className="text-[11px] font-mono font-medium text-muted-foreground tabular-nums">
-              {(pgState?.returnHistory?.length ?? 0)} / {(pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500)}
+              {(pgState?.updateCount ?? 0)}/
+              {(pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500)}
             </span>
           </div>
           <div
             className="h-1.5 w-full rounded-full bg-secondary"
             role="progressbar"
-            aria-valuenow={pgState?.returnHistory?.length ?? 0}
+            aria-valuenow={pgState?.updateCount ?? 0}
             aria-valuemin={0}
             aria-valuemax={(pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500)}
             aria-label="Updates progress"
           >
             <div
-              className="h-full rounded-full bg-primary transition-all duration-300"
+              className="h-full rounded-full bg-primary"
               style={{
-                width: `${Math.min(100, ((pgState?.returnHistory?.length ?? 0) / ((pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500) || 1)) * 100)}%`,
+                width: `${Math.min(
+                  100,
+                  ((pgState?.updateCount ?? 0) /
+                    (((pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500)) || 1)) *
+                    100,
+                )}%`,
               }}
             />
           </div>
         </div>
       )}
-      {activeMode === "evolution" && (
+      {activeMode === "evolution" && evState && (
         <div className="flex shrink-0 flex-col gap-2">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium text-muted-foreground">Episode Progress</span>
+            <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
+              Generation Progress
+              <InfoTooltip description="Current generation out of the target. Each generation evaluates the full population." />
+            </span>
             <span className="text-[11px] font-mono font-medium text-muted-foreground tabular-nums">
-              {metrics.episode} / {metrics.totalEpisodes}
+              {evState.generation}/{evState.targetGenerations}
             </span>
           </div>
           <div
             className="h-1.5 w-full rounded-full bg-secondary"
             role="progressbar"
-            aria-valuenow={metrics.episode}
+            aria-valuenow={evState.generation}
             aria-valuemin={0}
-            aria-valuemax={metrics.totalEpisodes}
-            aria-label="Episode progress"
+            aria-valuemax={evState.targetGenerations}
+            aria-label="Generation progress"
           >
             <div
               className="h-full rounded-full bg-primary transition-all duration-300"
-              style={{ width: `${progressPct}%` }}
+              style={{
+                width: `${Math.min(100, (evState.generation / Math.max(1, evState.targetGenerations)) * 100)}%`,
+              }}
             />
           </div>
         </div>
@@ -696,7 +894,7 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
 
       <div className={cn(
         "shrink-0",
-        (isHuman || activeMode === "imitation" || activeMode === "policy-gradient") && "grid grid-cols-[2fr_3fr] gap-4"
+        (isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") && "grid grid-cols-[2fr_3fr] gap-4"
       )}>
         {isHuman && (
           <div className="min-w-0">
@@ -760,15 +958,44 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
             )}
           </div>
         )}
-        <ObservationInspector
+        {activeMode === "evolution" && (
+          <div className="min-w-0">
+            {evState?.fitnessHistory && evState.fitnessHistory.length > 0 ? (
+              <ChartContainer
+                data={evState.fitnessHistory}
+                label="Best Fitness"
+                color="var(--accent)"
+                tooltip="Top fitness each generation, averaged across eval seeds."
+              />
+            ) : (
+              <div className="flex flex-col gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  Best Fitness
+                  <InfoTooltip description="Top fitness each generation, averaged across eval seeds." />
+                </span>
+                <div className="h-[180px] flex items-center justify-center rounded-md border border-dashed border-border">
+                  <span className="text-xs text-muted-foreground">Evolve to see fitness</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {!isEvolutionArena &&
+          (!isHeadless || isEvolutionSinglePlayerReady) &&
+          !(activeMode === "policy-gradient" && isHeadless) && <ObservationInspector
           observations={
             (showGame || activeMode === "imitation") && runner.state
               ? (() => {
                   const s = runner.state!
                   const obs = getObservation(s)
-                  const nextObs = s.obstacles
-                    .filter((o) => o.x + o.width > GAME_CONFIG.playerX)
-                    .sort((a, b) => a.x - b.x)[0] ?? null
+                  let nextObs = null as typeof s.obstacles[0] | null
+                  let bestDist = Infinity
+                  for (const o of s.obstacles) {
+                    if (o.x + o.width > GAME_CONFIG.playerX && o.x < bestDist) {
+                      bestDist = o.x
+                      nextObs = o
+                    }
+                  }
                   const rawDist = nextObs ? Math.max(0, nextObs.x - GAME_CONFIG.playerX) : 0
                   return [
                     { label: "Distance to Obstacle", value: obs[0], max: 1, displayValue: String(Math.floor(rawDist)) },
@@ -777,11 +1004,12 @@ export function GamePanel({ activeMode, isHeadless, onHumanMetricsChange, imitat
                     { label: "Player Y", value: obs[3], max: 1, displayValue: s.playerY.toFixed(1) },
                     { label: "Player Velocity", value: obs[4], max: 1, displayValue: s.playerVy.toFixed(2) },
                     { label: "Game Speed", value: obs[5], max: 1, displayValue: s.gameSpeed.toFixed(2) },
+                    { label: "Height Clearance", value: obs[6], max: 1, displayValue: obs[6].toFixed(2) },
                   ]
                 })()
               : undefined
           }
-        />
+        />}
       </div>
 
       {activeMode === "imitation" && (

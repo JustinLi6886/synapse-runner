@@ -41,6 +41,68 @@ interface ModeSelectorProps {
   onModeChange: (mode: string) => void
 }
 
+function modeActiveStyles(modeId: string): { button: string; icon: string } {
+  switch (modeId) {
+    case "imitation":
+      return {
+        button:
+          "border-emerald-400 bg-emerald-500/10 text-card-foreground shadow-[inset_0_0_0_1px_rgba(52,211,153,0.22)]",
+        icon: "bg-emerald-500/20 text-emerald-400",
+      }
+    case "policy-gradient":
+      return {
+        button:
+          "border-amber-400 bg-amber-500/10 text-card-foreground shadow-[inset_0_0_0_1px_rgba(251,191,36,0.22)]",
+        icon: "bg-amber-500/20 text-amber-400",
+      }
+    case "evolution":
+      return {
+        button:
+          "border-red-500 bg-red-500/10 text-card-foreground shadow-[inset_0_0_0_1px_rgba(239,68,68,0.2)]",
+        icon: "bg-red-500/20 text-red-500",
+      }
+    default:
+      return {
+        button:
+          "border-primary bg-primary/10 text-card-foreground shadow-[inset_0_0_0_1px_rgba(59,130,246,0.15)]",
+        icon: "bg-primary/20 text-primary",
+      }
+  }
+}
+
+function modeInactiveStyles(modeId: string): { button: string; icon: string; title: string } {
+  switch (modeId) {
+    case "imitation":
+      return {
+        button:
+          "border-emerald-500/25 bg-emerald-500/[0.06] text-muted-foreground hover:border-emerald-400/45 hover:bg-emerald-500/10 hover:text-card-foreground",
+        icon: "bg-emerald-500/10 text-emerald-500/55",
+        title: "text-muted-foreground group-hover:text-card-foreground",
+      }
+    case "policy-gradient":
+      return {
+        button:
+          "border-amber-500/25 bg-amber-500/[0.06] text-muted-foreground hover:border-amber-400/45 hover:bg-amber-500/10 hover:text-card-foreground",
+        icon: "bg-amber-500/10 text-amber-500/55",
+        title: "text-muted-foreground group-hover:text-card-foreground",
+      }
+    case "evolution":
+      return {
+        button:
+          "border-red-500/25 bg-red-500/[0.06] text-muted-foreground hover:border-red-500/45 hover:bg-red-500/10 hover:text-card-foreground",
+        icon: "bg-red-500/10 text-red-500/55",
+        title: "text-muted-foreground group-hover:text-card-foreground",
+      }
+    default:
+      return {
+        button:
+          "border-primary/30 bg-primary/[0.06] text-muted-foreground hover:border-primary/50 hover:bg-primary/10 hover:text-card-foreground",
+        icon: "bg-primary/10 text-primary/60",
+        title: "text-muted-foreground group-hover:text-card-foreground",
+      }
+  }
+}
+
 export function ModeSelector({ activeMode, onModeChange }: ModeSelectorProps) {
   const primaryModes = modes.filter((m) => m.id === "human" || m.id === "imitation")
   const otherModes = modes.filter((m) => m.id !== "human" && m.id !== "imitation")
@@ -48,40 +110,41 @@ export function ModeSelector({ activeMode, onModeChange }: ModeSelectorProps) {
   const renderMode = (mode: Mode, showDescription = true) => {
     const isActive = activeMode === mode.id
     const Icon = mode.icon
+    const accent = modeActiveStyles(mode.id)
+    const muted = modeInactiveStyles(mode.id)
     return (
       <button
         key={mode.id}
+        type="button"
         onClick={() => onModeChange(mode.id)}
         role="radio"
         aria-checked={isActive}
         aria-label={`${mode.title}: ${mode.description}`}
         className={cn(
-          "flex items-center gap-3 rounded-lg border p-3 text-left transition-all",
+          "group flex items-center gap-3 rounded-lg border p-3 text-left transition-all",
           "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
-          isActive
-            ? "border-primary bg-primary/10 text-card-foreground shadow-[inset_0_0_0_1px_rgba(59,130,246,0.15)]"
-            : "border-border bg-card text-muted-foreground hover:border-muted-foreground/40 hover:bg-secondary/50 hover:text-card-foreground"
+          isActive ? accent.button : muted.button
         )}
       >
         <div
           className={cn(
             "flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors",
-            isActive
-              ? "bg-primary/20 text-primary"
-              : "bg-secondary text-muted-foreground"
+            isActive ? accent.icon : muted.icon
           )}
         >
           <Icon className="h-4 w-4" />
         </div>
         <div className="flex flex-col gap-0.5">
-          <span className={cn(
-            "text-sm font-medium leading-none",
-            isActive ? "text-card-foreground" : ""
-          )}>
+          <span
+            className={cn(
+              "text-sm font-medium leading-none transition-colors",
+              isActive ? "text-card-foreground" : muted.title
+            )}
+          >
             {mode.title}
           </span>
           {showDescription && (
-            <span className="text-[11px] leading-none text-muted-foreground">
+            <span className="text-[11px] leading-none text-muted-foreground/90 group-hover:text-muted-foreground">
               {mode.description}
             </span>
           )}
@@ -93,7 +156,7 @@ export function ModeSelector({ activeMode, onModeChange }: ModeSelectorProps) {
   return (
     <div className="flex flex-col gap-2" role="radiogroup" aria-label="Training mode selector">
       <span className="text-[11px] text-muted-foreground leading-snug">
-        Play manually, then train the AI to copy your gameplay.
+        Choose how the agent is controlled or trained — settings are in the panel below.
       </span>
       <div className="grid grid-cols-2 gap-2">
         {primaryModes.map((m) => renderMode(m, false))}

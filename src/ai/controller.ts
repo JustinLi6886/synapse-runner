@@ -1,10 +1,20 @@
 import type { GameState, Action } from "@/game/types"
 
+function createSeededRandom(seed: number): () => number {
+  let s = seed
+  return () => {
+    let t = (s += 0x6d2b79f5) | 0
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
 export interface Controller {
   decideAction(state: GameState, obs: number[]): Action
   getLastLogProb?(): number
   onEpisodeEnd?(stats: { score: number; steps: number }): void
-  reset?(): void
+  reset?(seed?: number): void
 }
 
 export class HumanController implements Controller {
@@ -14,7 +24,7 @@ export class HumanController implements Controller {
     if (v) this.jumpPressed = true
   }
 
-  decideAction(state: GameState, _obs: number[]): Action {
+  decideAction(state: GameState): Action {
     if (!this.jumpPressed) return 0
     if (state.playerY > 0 || state.playerVy > 0) {
       this.jumpPressed = false
@@ -30,17 +40,22 @@ export class HumanController implements Controller {
 export class ModelController implements Controller {
   private predict: (obs: number[]) => number
   private threshold: number
+  private gated: boolean
 
-  constructor(predict: (obs: number[]) => number, threshold = 0.5) {
+  constructor(predict: (obs: number[]) => number, threshold = 0.5, gated = true) {
     this.predict = predict
     this.threshold = threshold
+    this.gated = gated
   }
 
   setThreshold(t: number): void {
     this.threshold = t
   }
 
-  decideAction(_state: GameState, obs: number[]): Action {
+  decideAction(state: GameState, obs: number[]): Action {
+    const grounded = state.playerY <= 0
+    if (!grounded) return 0
+    if (this.gated && obs[0] > 0.5) return 0
     const pJump = this.predict(obs)
     return pJump >= this.threshold ? 1 : 0
   }
@@ -52,21 +67,37 @@ export class ModelController implements Controller {
 export class SamplingModelController implements Controller {
   private predict: (obs: number[]) => number
   private lastLogProb = 0
+  private rng: () => number
+  private episodeCounter: number
 
   constructor(predict: (obs: number[]) => number) {
     this.predict = predict
+    this.episodeCounter = 42
+    this.rng = createSeededRandom(42)
   }
 
   getLastLogProb(): number {
     return this.lastLogProb
   }
 
-  decideAction(_state: GameState, obs: number[]): Action {
-    const pJump = Math.max(1e-8, Math.min(1 - 1e-8, this.predict(obs)))
-    const action: Action = Math.random() < pJump ? 1 : 0
+  decideAction(state: GameState, obs: number[]): Action {
+    const grounded = state.playerY <= 0
+    if (!grounded || obs[0] > 0.5) {
+      this.lastLogProb = 0
+      return 0
+    }
+    const pJump = Math.max(1e-7, Math.min(1 - 1e-7, this.predict(obs)))
+    const action: Action = this.rng() < pJump ? 1 : 0
     this.lastLogProb = action * Math.log(pJump) + (1 - action) * Math.log(1 - pJump)
     return action
   }
 
-  reset(): void {}
+  reset(seed?: number): void {
+    if (seed !== undefined) {
+      this.rng = createSeededRandom(seed ^ 0xa5a5a5a5)
+    } else {
+      this.episodeCounter += 1
+      this.rng = createSeededRandom(this.episodeCounter)
+    }
+  }
 }

@@ -17,6 +17,13 @@ interface ChartContainerProps {
   tooltip?: string
 }
 
+function formatYTick(value: number): string {
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(0)}K`
+  if (Number.isInteger(value)) return String(value)
+  return value.toFixed(1)
+}
+
 export function ChartContainer({ data, label, color = "var(--primary)", tooltip }: ChartContainerProps) {
   return (
     <div className="flex flex-col gap-2" role="img" aria-label={`${label} chart`}>
@@ -38,7 +45,8 @@ export function ChartContainer({ data, label, color = "var(--primary)", tooltip 
               tick={{ fontSize: 10, fill: "var(--muted-foreground)" }}
               axisLine={false}
               tickLine={false}
-              width={36}
+              width={44}
+              tickFormatter={formatYTick}
             />
             <Tooltip
               contentStyle={{
@@ -58,6 +66,7 @@ export function ChartContainer({ data, label, color = "var(--primary)", tooltip 
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 3, fill: color, stroke: "var(--card)", strokeWidth: 2 }}
+              isAnimationActive={false}
             />
           </LineChart>
         </ResponsiveContainer>

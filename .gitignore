@@ -12,9 +12,22 @@ dist
 dist-ssr
 *.local
 
-# Environment
+# Environment & secrets (never commit)
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+*id_rsa*
+secrets/
+credentials.json
+serviceAccount*.json
+*.secret
+
+# Test / tooling output
+coverage
+.turbo
+.vercel
 
 # ESLint
 .eslintcache
