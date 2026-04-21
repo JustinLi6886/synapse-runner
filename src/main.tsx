@@ -3,12 +3,6 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 
-if (import.meta.env.DEV) {
-  setTimeout(() => {
-    import('./nn/debug').then((m) => m.registerNNDemos()).catch(() => {})
-  }, 0)
-}
-
 const rootEl = document.getElementById('root')
 if (!rootEl) throw new Error('Root element #root not found')
 
@@ -20,10 +14,10 @@ class AppErrorBoundary extends Component<{ children: React.ReactNode }, { hasErr
   render() {
     if (this.state.hasError && this.state.error) {
       return (
-        <div style={{ padding: 24, fontFamily: 'system-ui', color: '#E2E8F0', background: '#0F1115', minHeight: '100vh' }}>
-          <h1 style={{ color: '#EF4444' }}>Something went wrong</h1>
-          <pre style={{ overflow: 'auto', marginTop: 16 }}>{this.state.error.message}</pre>
-          <pre style={{ overflow: 'auto', marginTop: 8, fontSize: 12, opacity: 0.8 }}>{this.state.error.stack}</pre>
+        <div className="min-h-screen bg-background p-6 font-sans text-foreground">
+          <h1 className="text-xl font-semibold text-destructive">Something went wrong</h1>
+          <pre className="mt-4 overflow-auto text-sm">{this.state.error.message}</pre>
+          <pre className="mt-2 overflow-auto text-xs opacity-80">{this.state.error.stack}</pre>
         </div>
       )
     }

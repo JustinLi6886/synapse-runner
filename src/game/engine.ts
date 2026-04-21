@@ -21,7 +21,6 @@ const {
   distancePerSecond,
 } = GAME_CONFIG
 
-// Precomputed: max height of a jump at base speed (v²/2g)
 const MAX_JUMP_HEIGHT = (jumpVelocity * jumpVelocity) / (2 * gravity)
 
 function nextRng(state: number): [number, number] {
@@ -57,10 +56,6 @@ export function createGameState(viewWidth: number, seed: number = 42): GameState
   }
 }
 
-export function reset(viewWidth: number, seed?: number): GameState {
-  return createGameState(viewWidth, seed)
-}
-
 function checkCollision(state: GameState): boolean {
   const playerLeft = PLAYER_X
   const playerRight = PLAYER_X + PLAYER_W
@@ -83,26 +78,37 @@ function checkCollision(state: GameState): boolean {
   return false
 }
 
+function nearestObstacleAhead(state: GameState): Obstacle | null {
+  let nextObs: Obstacle | null = null
+  let bestX = Infinity
+  for (let i = 0; i < state.obstacles.length; i++) {
+    const o = state.obstacles[i]
+    if (o.x + o.width > PLAYER_X && o.x < bestX) {
+      bestX = o.x
+      nextObs = o
+    }
+  }
+  return nextObs
+}
+
 export function step(prev: GameState, action: Action, dt: number): StepResult {
   if (prev.gameOver) {
     return {
       state: prev,
       reward: 0,
       done: true,
-      info: { obstaclePassed: false, obstaclesPassed: 0, collision: false, score: getScore(prev) },
+      info: { obstaclePassed: false, obstaclesPassed: 0, collision: false, score: floorScore(prev) },
     }
   }
 
   const viewWidth = prev.viewWidth
   let { playerY, playerVy, obstacles, spawnProgressPx, nextSpawnGapPx, distance, pixelsTraveled, nextObstacleId, rngState } = prev
 
-  // Smooth continuous speed ramp instead of discrete jumps
   const gameSpeed = Math.min(speedMax, speedStart + distance * speedAccel)
   const movePx = baseMovePx * gameSpeed
 
   distance += distancePerSecond * dt * gameSpeed
 
-  // g ∝ speed², v ∝ speed → constant jump height, airtime ∝ 1/speed
   const g = gravity * gameSpeed * gameSpeed
   const jumpV = jumpVelocity * gameSpeed
 
@@ -161,12 +167,27 @@ export function step(prev: GameState, action: Action, dt: number): StepResult {
     rngState,
   }
 
-  // Shaped reward: survival + obstacle bonus + speed bonus − jump cost
-  // Jump cost breaks the flat-return plateau: random bouncing is penalised,
-  // so the policy gradient has a real signal to learn precise timing.
+  const nextAhead = nearestObstacleAhead(prev)
+  const maxDist0 = Math.max(1, prev.viewWidth - PLAYER_X)
+  const h = nextAhead?.height ?? 0
+  const clearance01 = Math.max(0, Math.min(1, h / MAX_JUMP_HEIGHT))
+  const distPx = nextAhead ? Math.max(0, nextAhead.x - PLAYER_X) : maxDist0
+  const dist01 = Math.max(0, Math.min(1, distPx / maxDist0))
   const jumped = action === 1 && prev.playerY <= 0
   let reward = 0.01 + obstaclesPassed * 5.0 + (gameSpeed - speedStart) * 0.002
-  if (jumped) reward -= 0.5
+  const JUMP_COST_BASE = 0.85
+  const JUMP_EXTRA_LOW_CLEARANCE = 0.38
+  const JUMP_EXTRA_EARLY = 0.62
+  if (jumped) {
+    reward -= JUMP_COST_BASE
+    reward -= JUMP_EXTRA_LOW_CLEARANCE * (1 - clearance01)
+    reward -= JUMP_EXTRA_EARLY * dist01 * dist01
+  }
+  const IDLE_CLEAR_MAX = 0.22
+  const IDLE_BONUS = 0.018
+  if (prev.playerY <= 0 && !jumped && clearance01 < IDLE_CLEAR_MAX) {
+    reward += IDLE_BONUS
+  }
   let collision = false
 
   if (checkCollision(next)) {
@@ -183,30 +204,13 @@ export function step(prev: GameState, action: Action, dt: number): StepResult {
       obstaclePassed: obstaclesPassed > 0,
       obstaclesPassed,
       collision,
-      score: getScore(next),
+      score: floorScore(next),
     },
   }
 }
 
-/**
- * Returns 7-dimensional observation, all normalized to [0,1]:
- * [distToObs, obsWidth, obsHeight, playerY, playerVy, gameSpeed, heightClearance]
- *
- * heightClearance = how much of max jump height the obstacle demands (0 = no obstacle, 1 = needs full jump).
- * Gives the agent a direct signal about whether it needs to jump at all for this obstacle.
- */
 export function getObservation(state: GameState): number[] {
-  // O(n) scan for nearest obstacle ahead of player (avoids filter+sort allocations)
-  let nextObs: Obstacle | null = null
-  let bestX = Infinity
-  for (let i = 0; i < state.obstacles.length; i++) {
-    const o = state.obstacles[i]
-    if (o.x + o.width > PLAYER_X && o.x < bestX) {
-      bestX = o.x
-      nextObs = o
-    }
-  }
-
+  const nextObs = nearestObstacleAhead(state)
   const maxDistance = Math.max(1, state.viewWidth - PLAYER_X)
   const dist = nextObs ? Math.max(0, nextObs.x - PLAYER_X) : maxDistance
   const width = nextObs?.width ?? 0
@@ -226,10 +230,6 @@ export function getObservation(state: GameState): number[] {
   ]
 }
 
-export function isDone(state: GameState): boolean {
-  return state.gameOver
-}
-
-export function getScore(state: GameState): number {
+function floorScore(state: GameState): number {
   return Math.floor(state.distance)
 }

@@ -1,4 +1,5 @@
 import type { GameState, Action } from "@/game/types"
+import { spreadEvalProbTowardHalf } from "@/ai/actorCritic"
 
 function createSeededRandom(seed: number): () => number {
   let s = seed
@@ -40,30 +41,37 @@ export class HumanController implements Controller {
 export class ModelController implements Controller {
   private predict: (obs: number[]) => number
   private threshold: number
-  private gated: boolean
+  private evalLogitTemperature: number
 
-  constructor(predict: (obs: number[]) => number, threshold = 0.5, gated = true) {
+  constructor(
+    predict: (obs: number[]) => number,
+    threshold = 0.5,
+    evalLogitTemperature = 1,
+  ) {
     this.predict = predict
     this.threshold = threshold
-    this.gated = gated
+    this.evalLogitTemperature = evalLogitTemperature
   }
 
   setThreshold(t: number): void {
     this.threshold = t
   }
 
+  setEvalLogitTemperature(t: number): void {
+    this.evalLogitTemperature = t
+  }
+
   decideAction(state: GameState, obs: number[]): Action {
     const grounded = state.playerY <= 0
     if (!grounded) return 0
-    if (this.gated && obs[0] > 0.5) return 0
-    const pJump = this.predict(obs)
+    const pRaw = this.predict(obs)
+    const pJump = spreadEvalProbTowardHalf(pRaw, this.evalLogitTemperature)
     return pJump >= this.threshold ? 1 : 0
   }
 
   reset(): void {}
 }
 
-/** Samples action from Bernoulli(pJump) for RL training. Call getLastLogProb() after decideAction. */
 export class SamplingModelController implements Controller {
   private predict: (obs: number[]) => number
   private lastLogProb = 0
@@ -82,7 +90,7 @@ export class SamplingModelController implements Controller {
 
   decideAction(state: GameState, obs: number[]): Action {
     const grounded = state.playerY <= 0
-    if (!grounded || obs[0] > 0.5) {
+    if (!grounded) {
       this.lastLogProb = 0
       return 0
     }

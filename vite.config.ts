@@ -18,10 +18,6 @@ export default defineConfig({
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },
   },
-  optimizeDeps: {
-    force: false,
-    // No include list — let Vite discover deps
-  },
   server: {
     port: 3000,
     strictPort: false,

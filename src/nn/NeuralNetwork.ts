@@ -1,8 +1,8 @@
 import type { NeuralNetworkConfig } from './types'
 import { leakyRelu, leakyReluDerivative, sigmoid } from './activations'
 import { binaryCrossEntropyBatch } from './loss'
+import { sanitizeImportedText } from '@/lib/sanitize'
 
-// weights[layer][out][in], biases[layer][out]
 function createSeededRandom(seed: number): () => number {
   return function next() {
     let t = (seed += 0x6d2b79f5)
@@ -21,6 +21,21 @@ export class NeuralNetwork {
   private cachedZ: number[][] = []
   private cachedA: number[][] = []
 
+  private repairNonFiniteParameters(): void {
+    for (let l = 0; l < this.weights.length; l++) {
+      for (let i = 0; i < this.weights[l].length; i++) {
+        for (let j = 0; j < this.weights[l][i].length; j++) {
+          const w = this.weights[l][i][j]
+          this.weights[l][i][j] = Number.isFinite(w) ? w : 0
+        }
+      }
+      for (let i = 0; i < this.biases[l].length; i++) {
+        const b = this.biases[l][i]
+        this.biases[l][i] = Number.isFinite(b) ? b : 0
+      }
+    }
+  }
+
   constructor(config: NeuralNetworkConfig) {
     const { layers, learningRate, seed = 42, outputBias = 0, outputActivation = 'sigmoid' } = config
     this.outputActivation = outputActivation
@@ -33,6 +48,9 @@ export class NeuralNetwork {
     for (let l = 0; l < layers.length - 1; l++) {
       const nIn = layers[l]
       const nOut = layers[l + 1]
+      if (nIn < 1 || nOut < 1) {
+        throw new Error('NeuralNetwork: layer sizes must be positive')
+      }
       const isLast = l === layers.length - 2
       const scale = isLast ? Math.sqrt(1 / nIn) : Math.sqrt(2 / nIn)
       const W: number[][] = []
@@ -51,17 +69,26 @@ export class NeuralNetwork {
 
   forward(input: number[]): number[] {
     const L = this.weights.length
-    this.cachedA = [input]
+    const inDim = this.layers[0]
+    const cleanIn: number[] = new Array(inDim)
+    for (let j = 0; j < inDim; j++) {
+      const v = j < input.length ? input[j] : 0
+      cleanIn[j] = Number.isFinite(v) ? v : 0
+    }
+    this.cachedA = [cleanIn]
     this.cachedZ = []
 
-    let a = input
+    let a = cleanIn
     for (let l = 0; l < L; l++) {
       const nOut = this.weights[l].length
-      const nIn = a.length
+      const nIn = this.layers[l]
       const z: number[] = []
       for (let i = 0; i < nOut; i++) {
         let sum = this.biases[l][i]
-        for (let j = 0; j < nIn; j++) sum += this.weights[l][i][j] * a[j]
+        for (let j = 0; j < nIn; j++) {
+          const aj = j < a.length ? a[j] : 0
+          sum += this.weights[l][i][j] * aj
+        }
         z[i] = sum
       }
       this.cachedZ.push(z)
@@ -71,6 +98,11 @@ export class NeuralNetwork {
         : leakyRelu(v)))
       this.cachedA.push(a)
     }
+    for (let i = 0; i < a.length; i++) {
+      if (!Number.isFinite(a[i])) {
+        a[i] = this.outputActivation === 'linear' ? 0 : 0.5
+      }
+    }
     return a
   }
 
@@ -78,9 +110,6 @@ export class NeuralNetwork {
     return this.forward(input)
   }
 
-  // Zero-allocation inference: reuses pre-allocated layer buffers.
-  // Returns scalar (first output neuron). Use for hot loops where
-  // backprop caching is not needed (episode sim, GAE, eval).
   private _inferBufs: number[][] | null = null
 
   predictOnly(input: number[]): number {
@@ -90,7 +119,12 @@ export class NeuralNetwork {
         this._inferBufs[l] = new Array(this.weights[l].length)
       }
     }
-    let a = input
+    const inDim = this.layers[0]
+    let a: number[] = new Array(inDim)
+    for (let j = 0; j < inDim; j++) {
+      const v = j < input.length ? input[j] : 0
+      a[j] = Number.isFinite(v) ? v : 0
+    }
     const L = this.weights.length
     for (let l = 0; l < L; l++) {
       const W = this.weights[l]
@@ -98,17 +132,30 @@ export class NeuralNetwork {
       const nOut = W.length
       const out = this._inferBufs[l]
       const isLast = l === L - 1
+      const nIn = this.layers[l]
       for (let i = 0; i < nOut; i++) {
         let sum = b[i]
         const Wi = W[i]
-        for (let j = 0; j < a.length; j++) sum += Wi[j] * a[j]
+        for (let j = 0; j < nIn; j++) {
+          const aj = j < a.length ? a[j] : 0
+          sum += Wi[j] * aj
+        }
         out[i] = isLast
           ? (this.outputActivation === 'linear' ? sum : sigmoid(Math.max(-3, Math.min(3, sum))))
           : leakyRelu(sum)
       }
       a = out
     }
-    return a[0]
+    let r = a[0]
+    if (!Number.isFinite(r)) r = this.outputActivation === 'linear' ? 0 : 0.5
+    return r
+  }
+
+  predictLastLogitClamped(input: number[]): number {
+    this.forward(input)
+    const L = this.weights.length
+    const z = this.cachedZ[L - 1][0]
+    return Math.max(-3, Math.min(3, z))
   }
 
   trainBatch(inputs: number[][], targets: number[][]): { loss: number } {
@@ -136,15 +183,15 @@ export class NeuralNetwork {
       const outA = this.cachedA[this.cachedA.length - 1]
       const y = targets[s][0]
       const p = outA[0]
-      // BCE+sigmoid combined gradient: dL/dz = (p - y)
       let dLdz: number[] = [p - y]
       for (let l = L - 1; l >= 0; l--) {
         const aPrev = this.cachedA[l]
         const nOut = this.weights[l].length
-        const nIn = aPrev.length
+        const nIn = this.layers[l]
         for (let o = 0; o < nOut; o++) {
           for (let j = 0; j < nIn; j++) {
-            gradW[l][o][j] += dLdz[o] * aPrev[j]
+            const aj = j < aPrev.length ? aPrev[j] : 0
+            gradW[l][o][j] += dLdz[o] * aj
           }
           gradB[l][o] += dLdz[o]
         }
@@ -156,7 +203,7 @@ export class NeuralNetwork {
           daPrev[j] = sum
         }
         const zPrev = this.cachedZ[l - 1]
-        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(zPrev[j]))
+        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(j < zPrev.length ? zPrev[j] : 0))
       }
     }
 
@@ -171,12 +218,14 @@ export class NeuralNetwork {
       }
     }
 
+    this.repairNonFiniteParameters()
     return { loss }
   }
 
-  trainMSE(inputs: number[][], targets: number[][]): { loss: number } {
+  trainMSE(inputs: number[][], targets: number[][], stepLr?: number): { loss: number } {
     const N = inputs.length
     if (N === 0) return { loss: 0 }
+    const lrStep = stepLr ?? this.learningRate
 
     const L = this.weights.length
     const gradW: number[][][] = this.weights.map((W) =>
@@ -191,15 +240,15 @@ export class NeuralNetwork {
       const pred = out[0]
       totalLoss += (pred - target) ** 2
 
-      // dL/dz = 2(pred - target) / N for linear output
       let dLdz: number[] = [(2 * (pred - target)) / N]
       for (let l = L - 1; l >= 0; l--) {
         const aPrev = this.cachedA[l]
         const nOut = this.weights[l].length
-        const nIn = aPrev.length
+        const nIn = this.layers[l]
         for (let o = 0; o < nOut; o++) {
           for (let j = 0; j < nIn; j++) {
-            gradW[l][o][j] += dLdz[o] * aPrev[j]
+            const aj = j < aPrev.length ? aPrev[j] : 0
+            gradW[l][o][j] += dLdz[o] * aj
           }
           gradB[l][o] += dLdz[o]
         }
@@ -211,7 +260,7 @@ export class NeuralNetwork {
           daPrev[j] = sum
         }
         const zPrev = this.cachedZ[l - 1]
-        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(zPrev[j]))
+        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(j < zPrev.length ? zPrev[j] : 0))
       }
     }
 
@@ -219,31 +268,30 @@ export class NeuralNetwork {
       const nOut = this.weights[l].length
       const nIn = this.weights[l][0].length
       for (let i = 0; i < nOut; i++) {
-        this.biases[l][i] -= this.learningRate * gradB[l][i]
+        this.biases[l][i] -= lrStep * gradB[l][i]
         for (let j = 0; j < nIn; j++) {
-          this.weights[l][i][j] -= this.learningRate * gradW[l][i][j]
+          this.weights[l][i][j] -= lrStep * gradW[l][i][j]
         }
       }
     }
 
+    this.repairNonFiniteParameters()
     return { loss: totalLoss / N }
   }
 
-  /**
-   * REINFORCE update with per-layer gradient clipping.
-   * Gradients averaged over N training samples (not episodes).
-   */
   policyGradientUpdate(
     inputs: number[][],
     actions: number[],
-    returns: number[],
-    opts?: { clipGrad?: number; lr?: number; entropyCoef?: number }
+    advantages: number[],
+    opts?: { clipGrad?: number; lr?: number; entropyCoef?: number; samplingTemperature?: number }
   ): void {
     const N = inputs.length
     if (N === 0) return
     const clipGrad = opts?.clipGrad ?? 1
     const lr = opts?.lr ?? this.learningRate
     const entropyCoef = opts?.entropyCoef ?? 0.08
+    const T0 = opts?.samplingTemperature ?? 1
+    const T = T0 > 1e-6 ? T0 : 1
 
     const L = this.weights.length
     const gradW: number[][][] = this.weights.map((W) =>
@@ -253,22 +301,33 @@ export class NeuralNetwork {
 
     for (let i = 0; i < N; i++) {
       this.forward(inputs[i])
-      const outA = this.cachedA[this.cachedA.length - 1]
+      const zLast = this.cachedZ[L - 1][0]
       const action = actions[i]
-      const G = returns[i]
-      const p = outA[0]
-      // Use clamped z so entropy term matches clamped sigmoid in forward pass
-      const zRaw = this.cachedZ[this.cachedZ.length - 1][0]
-      const z = this.outputActivation === 'linear' ? zRaw : Math.max(-3, Math.min(3, zRaw))
-      // dL/dz: REINFORCE term + entropy regularization (dH/dz = -z*p*(1-p) for Bernoulli(σ(z)))
-      let dLdz: number[] = [(p - action) * G + entropyCoef * z * p * (1 - p)]
+      const A = advantages[i]
+      let p: number
+      if (this.outputActivation === 'linear') {
+        p = this.cachedA[this.cachedA.length - 1][0]
+      } else {
+        const zc = Math.max(-3, Math.min(3, zLast))
+        p = sigmoid(zc / T)
+      }
+      if (!Number.isFinite(p) || !Number.isFinite(A)) continue
+      const pc = this.outputActivation === 'linear' ? p : Math.max(1e-7, Math.min(1 - 1e-7, p))
+      const dEntropyDz =
+        this.outputActivation === 'linear'
+          ? 0
+          : (pc * (1 - pc) * (Math.log(1 - pc) - Math.log(pc))) / T
+      const policyTerm =
+        this.outputActivation === 'linear' ? (p - action) * A : ((p - action) * A) / T
+      let dLdz: number[] = [policyTerm - entropyCoef * dEntropyDz]
       for (let l = L - 1; l >= 0; l--) {
         const aPrev = this.cachedA[l]
         const nOut = this.weights[l].length
-        const nIn = aPrev.length
+        const nIn = this.layers[l]
         for (let o = 0; o < nOut; o++) {
           for (let j = 0; j < nIn; j++) {
-            gradW[l][o][j] += dLdz[o] * aPrev[j]
+            const aj = j < aPrev.length ? aPrev[j] : 0
+            gradW[l][o][j] += dLdz[o] * aj
           }
           gradB[l][o] += dLdz[o]
         }
@@ -280,11 +339,10 @@ export class NeuralNetwork {
           daPrev[j] = sum
         }
         const zPrev = this.cachedZ[l - 1]
-        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(zPrev[j]))
+        dLdz = daPrev.map((v, j) => v * leakyReluDerivative(j < zPrev.length ? zPrev[j] : 0))
       }
     }
 
-    // Average over training samples
     for (let l = 0; l < L; l++) {
       for (let i = 0; i < gradW[l].length; i++) {
         for (let j = 0; j < gradW[l][i].length; j++) gradW[l][i][j] /= N
@@ -292,8 +350,6 @@ export class NeuralNetwork {
       for (let i = 0; i < gradB[l].length; i++) gradB[l][i] /= N
     }
 
-    // Per-layer gradient clipping: clip each layer independently so the
-    // output layer can't dominate and starve earlier feature-learning layers
     for (let l = 0; l < L; l++) {
       let layerSq = 0
       for (let i = 0; i < gradW[l].length; i++) {
@@ -316,6 +372,8 @@ export class NeuralNetwork {
         }
       }
     }
+
+    this.repairNonFiniteParameters()
   }
 
   getWeights(): number[][][] {
@@ -328,6 +386,18 @@ export class NeuralNetwork {
 
   getLayerSizes(): number[] {
     return [...this.layers]
+  }
+
+  expandFirstLayerInputDim(newInputDim: number): void {
+    const oldIn = this.layers[0]
+    if (newInputDim <= oldIn) return
+    const pad = newInputDim - oldIn
+    const W0 = this.weights[0]
+    for (let i = 0; i < W0.length; i++) {
+      for (let k = 0; k < pad; k++) W0[i].push(0)
+    }
+    this.layers[0] = newInputDim
+    this._inferBufs = null
   }
 
   clone(): NeuralNetwork {
@@ -367,20 +437,43 @@ export class NeuralNetwork {
         this.biases[l][i] = biases[l][i]
       }
     }
+    this.repairNonFiniteParameters()
   }
 
   static fromWeights(json: string): NeuralNetwork {
-    const data = JSON.parse(json) as {
+    const text = sanitizeImportedText(json)
+    if (!text) throw new Error('Invalid model JSON')
+    let data: {
       layers: number[]
       learningRate: number
       outputActivation?: 'sigmoid' | 'linear'
       weights: number[][][]
       biases: number[][]
     }
+    try {
+      data = JSON.parse(text) as typeof data
+    } catch {
+      throw new Error('Invalid model JSON')
+    }
+    if (!data || typeof data !== 'object' || !Array.isArray(data.layers) || data.layers.length < 2) {
+      throw new Error('Invalid model shape')
+    }
+    for (let i = 0; i < data.layers.length; i++) {
+      const d = data.layers[i]
+      if (typeof d !== 'number' || !Number.isFinite(d) || d < 1 || d > 4096) {
+        throw new Error('Invalid layer sizes')
+      }
+    }
+    const rawLr = typeof data.learningRate === 'number' && Number.isFinite(data.learningRate) ? data.learningRate : 0.01
+    const lr = Math.min(100, Math.max(1e-10, rawLr))
+    const act = data.outputActivation === 'linear' ? 'linear' : 'sigmoid'
+    if (!Array.isArray(data.weights) || !Array.isArray(data.biases)) {
+      throw new Error('Invalid model shape')
+    }
     const nn = new NeuralNetwork({
       layers: data.layers,
-      learningRate: data.learningRate,
-      outputActivation: data.outputActivation ?? 'sigmoid',
+      learningRate: lr,
+      outputActivation: act,
       seed: 0,
     })
     nn.loadWeights(data.weights, data.biases)

@@ -3,6 +3,8 @@ import { NeuralNetwork } from "@/nn/NeuralNetwork"
 import { evolveGeneration, createPopulation } from "@/ai/evolution"
 import type { EvolutionConfig } from "@/ai/evolution"
 import { getPersisted, schedulePersist } from "@/lib/app-persist"
+import { toast } from "@/lib/toast"
+import { sanitizeImportedText } from "@/lib/sanitize"
 
 function loadEvolutionRefsFromStorage(): {
   population: NeuralNetwork[] | null
@@ -53,7 +55,6 @@ export interface EvolutionState {
   generation: number
   targetGenerations: number
   threshold: number
-  /** True only if the last run ended by hitting 1M fitness or finishing all generations — not Stop. */
   runComplete: boolean
 }
 
@@ -200,7 +201,6 @@ export function useEvolution(isHeadless: boolean): [EvolutionState, EvolutionAct
 
     try {
       while (gen < endGen && !stopRef.current) {
-        // Phase 1: Headless evaluation of entire population
         const genSeed = gen * 100003 + Date.now()
         const outcome = evolveGeneration(pop!, config, genSeed, () => stopRef.current)
         if (!outcome) break
@@ -226,7 +226,6 @@ export function useEvolution(isHeadless: boolean): [EvolutionState, EvolutionAct
           { name: String(gen), value: Math.round(genBest) },
         ])
 
-        // Phase 2: Visual showcase — top 12 play in real-time
         if (!isHeadlessRef.current && !stopRef.current) {
           const showCount = Math.min(12, pop.length)
           setElites(pop.slice(0, showCount))
@@ -283,7 +282,10 @@ export function useEvolution(isHeadless: boolean): [EvolutionState, EvolutionAct
 
   const exportModel = useCallback(() => {
     const m = model
-    if (!m) return
+    if (!m) {
+      toast.error("No model to export")
+      return
+    }
     const json = m.exportWeights()
     const blob = new Blob([json], { type: "application/json" })
     const url = URL.createObjectURL(blob)
@@ -292,11 +294,17 @@ export function useEvolution(isHeadless: boolean): [EvolutionState, EvolutionAct
     a.download = "evolution-model.json"
     a.click()
     URL.revokeObjectURL(url)
+    toast.success("Model exported")
   }, [model])
 
   const importModel = useCallback((json: string) => {
+    const text = sanitizeImportedText(json)
+    if (!text) {
+      toast.error("Import rejected (empty or invalid)")
+      return
+    }
     try {
-      const nn = NeuralNetwork.fromWeights(json)
+      const nn = NeuralNetwork.fromWeights(text)
       setModel(nn)
       bestEverRef.current = { model: nn.clone(), fitness: 0 }
       populationRef.current = null
@@ -308,8 +316,9 @@ export function useEvolution(isHeadless: boolean): [EvolutionState, EvolutionAct
       setGenBestFitness(0)
       setAvgFitness(0)
       setElites([])
+      toast.success("Model imported")
     } catch {
-      // Invalid JSON or shape mismatch
+      toast.error("Could not import model (invalid file or shape)")
     }
   }, [])
 

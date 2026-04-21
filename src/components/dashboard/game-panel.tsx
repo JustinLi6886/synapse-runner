@@ -3,7 +3,9 @@ import { Monitor } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useGameRunner } from "@/hooks/useGameRunner"
 import { HumanController, ModelController, SamplingModelController } from "@/ai/controller"
-import { GAME_CONFIG } from "@/game/config"
+import { rolloutTemperedJumpProb, spreadEvalProbTowardHalf } from "@/ai/actorCritic"
+import { GAME_CONFIG, SIM_VIEW_WIDTH } from "@/game/config"
+import { PG_DEFAULTS } from "@/lib/pg-defaults"
 import { createGameState, step, getObservation } from "@/game/engine"
 import { ObservationInspector } from "./observation-inspector"
 import { ChartContainer } from "./chart-container"
@@ -23,9 +25,9 @@ interface GamePanelProps {
 
 const modeLabels: Record<string, string> = {
   human: "Human",
-  imitation: "Imitation Learning",
-  "policy-gradient": "Policy Gradient (RL)",
-  evolution: "Evolution Strategy",
+  imitation: "Imitation",
+  "policy-gradient": "Policy gradient",
+  evolution: "Evolution",
 }
 
 function StatusBadge({ label, color, pulse = false }: { label: string; color: "primary" | "accent" | "destructive"; pulse?: boolean }) {
@@ -58,6 +60,41 @@ const ARENA_COLORS = [
   '#84cc16', '#fb923c',
 ]
 
+const NO_EVOLUTION_ARENA_AGENTS: { predictOnly(obs: number[]): number }[] = []
+
+function RunnerCharacterFigure({ grounded, inAir }: { grounded: boolean; inAir: boolean }) {
+  return (
+    <>
+      <div className="relative h-9 w-6 overflow-visible">
+        <div className="absolute inset-0 rounded-sm bg-primary shadow-[0_0_12px_rgba(59,130,246,0.3)]" />
+        <img
+          src="/SR.png"
+          alt=""
+          className="pointer-events-none absolute left-1/2 top-0 z-[1] h-[29px] w-[31px] max-w-none -translate-x-1/2 -translate-y-[4px] object-contain object-top select-none"
+          decoding="async"
+        />
+      </div>
+      <div
+        className={`absolute top-[20px] -left-[11px] z-[2] h-1.5 w-[12px] rounded-sm bg-primary/50 origin-right ${grounded ? "animate-arm-left" : inAir ? "rotate-[50deg]" : "rotate-[30deg]"}`}
+      />
+      <div
+        className={`absolute top-[20px] -right-[11px] z-[2] h-1.5 w-[12px] rounded-sm bg-primary/50 origin-left ${grounded ? "animate-arm-right" : inAir ? "-rotate-[50deg]" : "-rotate-[30deg]"}`}
+      />
+      <div
+        className={`absolute -bottom-[10px] left-0.5 h-3 w-1.5 rounded-sm bg-primary/60 origin-top ${grounded ? "animate-walk-left" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
+      />
+      <div
+        className={`absolute -bottom-[10px] right-0.5 h-3 w-1.5 rounded-sm bg-primary/60 origin-top ${grounded ? "animate-walk-right" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
+      />
+    </>
+  )
+}
+
+type EvolutionArenaGameState = ReturnType<typeof createGameState>
+
+const ARENA_FIXED_DT = 1 / 60
+const ARENA_MAX_ACCUM_SEC = 0.1
+
 function EvolutionArena({ agents, threshold, onAllDead, overlay }: {
   agents: { predictOnly(obs: number[]): number }[]
   threshold: number
@@ -65,11 +102,11 @@ function EvolutionArena({ agents, threshold, onAllDead, overlay }: {
   overlay?: React.ReactNode
 }) {
   const count = Math.min(12, agents.length)
-  const statesRef = useRef<ReturnType<typeof createGameState>[]>([])
+  const statesRef = useRef<EvolutionArenaGameState[]>([])
   const agentsRef = useRef(agents)
   const onAllDeadRef = useRef(onAllDead)
   const hasFiredRef = useRef(false)
-  const [, setTick] = useState(0)
+  const [displayStates, setDisplayStates] = useState<EvolutionArenaGameState[]>([])
 
   useEffect(() => { onAllDeadRef.current = onAllDead }, [onAllDead])
 
@@ -77,35 +114,50 @@ function EvolutionArena({ agents, threshold, onAllDead, overlay }: {
     agentsRef.current = agents
     hasFiredRef.current = false
     const baseSeed = Date.now()
-    statesRef.current = agents.slice(0, count).map((_, i) =>
-      createGameState(800, baseSeed + i * 997)
+    const next = agents.slice(0, count).map((_, i) =>
+      createGameState(SIM_VIEW_WIDTH, baseSeed + i * 997)
     )
+    statesRef.current = next
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial snapshot only
+    setDisplayStates(next)
   }, [agents, count])
 
   useEffect(() => {
     if (count === 0) return
     let rafId: number
-    const loop = () => {
-      let allDead = true
-      for (let i = 0; i < count; i++) {
-        const st = statesRef.current[i]
-        if (!st || st.gameOver) continue
-        allDead = false
-        const obs = getObservation(st)
-        const grounded = st.playerY <= 0
-        let action: Action = 0
-        if (grounded && agentsRef.current[i]) {
-          if (agentsRef.current[i].predictOnly(obs) >= threshold) action = 1
+    let lastTime: number | null = null
+    let accum = 0
+    const loop = (now: number) => {
+      const dtMs = lastTime != null ? Math.min(now - lastTime, 50) : 0
+      lastTime = now
+      accum = Math.min(accum + dtMs / 1000, ARENA_MAX_ACCUM_SEC)
+
+      while (accum >= ARENA_FIXED_DT) {
+        let allDead = true
+        for (let i = 0; i < count; i++) {
+          const st = statesRef.current[i]
+          if (!st || st.gameOver) continue
+          allDead = false
+          const obs = getObservation(st)
+          const grounded = st.playerY <= 0
+          let action: Action = 0
+          if (grounded && agentsRef.current[i]) {
+            if (agentsRef.current[i].predictOnly(obs) >= threshold) action = 1
+          }
+          statesRef.current[i] = step(st, action, ARENA_FIXED_DT).state
         }
-        statesRef.current[i] = step(st, action, 1 / 60).state
+        accum -= ARENA_FIXED_DT
+
+        const snapshot = statesRef.current.slice(0, count)
+        if (allDead && !hasFiredRef.current && statesRef.current.length > 0) {
+          hasFiredRef.current = true
+          setDisplayStates(snapshot)
+          onAllDeadRef.current()
+          return
+        }
       }
-      if (allDead && !hasFiredRef.current && statesRef.current.length > 0) {
-        hasFiredRef.current = true
-        setTick(t => t + 1)
-        onAllDeadRef.current()
-        return
-      }
-      setTick(t => t + 1)
+
+      setDisplayStates(statesRef.current.slice(0, count))
       rafId = requestAnimationFrame(loop)
     }
     rafId = requestAnimationFrame(loop)
@@ -113,55 +165,52 @@ function EvolutionArena({ agents, threshold, onAllDead, overlay }: {
   }, [agents, count, threshold])
 
   const idle = count === 0
+  const showPreRunSlots = count === 0
 
   return (
     <div className="relative w-full h-full">
       <div className="grid grid-cols-3 grid-rows-4 gap-0 w-full h-full">
         {Array.from({ length: 12 }, (_, i) => {
           const hasAgent = i < count
-          const state = hasAgent ? statesRef.current[i] : undefined
+          const state = hasAgent ? displayStates[i] : undefined
           const color = ARENA_COLORS[i]
-          const grounded = idle || (state && !state.gameOver && state.playerY <= 0)
-          const inAir = !idle && state && !state.gameOver && state.playerY > 0
+          const grounded = !!(idle || (state && !state.gameOver && state.playerY <= 0))
+          const inAir = !!(!idle && state && !state.gameOver && state.playerY > 0)
+          const showCharacter = hasAgent || showPreRunSlots
 
           return (
-            <div key={i} className="relative bg-[#0A0C0F] overflow-hidden">
-              <div className="absolute bottom-6 left-0 right-0 h-px bg-border" />
-              <div className="absolute bottom-0 left-0 right-0 h-6 border-t border-border/50" />
+            <div key={i} className="relative overflow-hidden bg-game-scene">
+              <div className="absolute bottom-6 left-0 right-0 h-[0.5px] bg-game-line" />
+              <div className="absolute bottom-0 left-0 right-0 h-6 border-t-[0.5px] border-game-line/55" />
 
-              <div
-                className="absolute"
-                style={{
-                  left: `${(GAME_CONFIG.playerX / 800) * 100}%`,
-                  bottom: `calc(1.5rem + 4px)`,
-                  transform: state ? `translateY(-${state.playerY * 0.5}px)` : undefined,
-                }}
-              >
+              {showCharacter && (
                 <div
-                  className="h-5 w-[14px] rounded-sm"
-                  style={{ backgroundColor: color, boxShadow: `0 0 10px ${color}50` }}
-                />
-                <div
-                  className={`absolute -bottom-[6px] left-px h-[7px] w-[4px] rounded-sm origin-top ${grounded ? "animate-walk-left" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
-                  style={{ backgroundColor: color, opacity: 0.5 }}
-                />
-                <div
-                  className={`absolute -bottom-[6px] right-px h-[7px] w-[4px] rounded-sm origin-top ${grounded ? "animate-walk-right" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
-                  style={{ backgroundColor: color, opacity: 0.5 }}
-                />
-              </div>
-
-              {state && state.obstacles.map((o) => (
-                <div
-                  key={o.id}
-                  className="absolute bottom-6 rounded-sm bg-destructive/70"
+                  className="absolute"
                   style={{
-                    left: `${(o.x / 800) * 100}%`,
-                    width: `${Math.max((o.width / 800) * 100, 0.5)}%`,
-                    height: `${Math.min(o.height * 0.5, 32)}px`,
+                    left: `${(GAME_CONFIG.playerX / SIM_VIEW_WIDTH) * 100}%`,
+                    bottom: `calc(1.5rem + 4px)`,
+                    transform:
+                      hasAgent && state ? `translateY(-${state.playerY * 0.5}px)` : undefined,
                   }}
-                />
-              ))}
+                >
+                  <div className="origin-bottom scale-[0.4]">
+                    <RunnerCharacterFigure grounded={grounded} inAir={inAir} />
+                  </div>
+                </div>
+              )}
+
+              {state &&
+                state.obstacles.map((o) => (
+                  <div
+                    key={o.id}
+                    className="absolute bottom-6 rounded-sm bg-destructive/70"
+                    style={{
+                      left: `${(o.x / SIM_VIEW_WIDTH) * 100}%`,
+                      width: `${Math.max((o.width / SIM_VIEW_WIDTH) * 100, 0.5)}%`,
+                      height: `${Math.min(o.height * 0.5, 32)}px`,
+                    }}
+                  />
+                ))}
 
               <span
                 className="absolute top-2.5 left-2 text-[9px] font-bold leading-none"
@@ -192,7 +241,7 @@ function EvolutionArena({ agents, threshold, onAllDead, overlay }: {
 export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, evolution }: GamePanelProps) {
 
   const sceneRef = useRef<HTMLDivElement>(null)
-  const [sceneWidth, setSceneWidth] = useState(800)
+  const [sceneWidth, setSceneWidth] = useState(SIM_VIEW_WIDTH)
   const [debugHitboxes, setDebugHitboxes] = useState(false)
   const [gameStarted, setGameStarted] = useState(false)
   const [runCount, setRunCount] = useState(0)
@@ -203,6 +252,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
   const frameCountRef = useRef(0)
   const lastRecordedRunRef = useRef(0)
   const lastEvalReportedRef = useRef(0)
+  const wasInAgentEvalRef = useRef(false)
 
   const [imitState, imitActions] = imitation ?? [undefined, undefined]
   const [pgState, pgActions] = policyGradient ?? [undefined, undefined]
@@ -218,17 +268,24 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
     : activeMode === "policy-gradient" ? pgState?.threshold
     : activeMode === "evolution" ? evState?.threshold
     : 0.5
-  const isEvolution = activeMode === "evolution"
   const modelCtrl = useMemo(() => {
     if (!activeModel) return null
-    const predict = (obs: number[]) => activeModel.predict(obs)[0]
-    return new ModelController(predict, activeThreshold, !isEvolution)
-  }, [activeModel, activeThreshold, isEvolution])
+    const predict = (obs: number[]) => activeModel.predictOnly(obs)
+    const spread =
+      activeMode === "policy-gradient" ? (pgState?.evalLogitTemperature ?? PG_DEFAULTS.evalLogitTemperature) : 1
+    return new ModelController(predict, activeThreshold, spread)
+  }, [activeModel, activeThreshold, activeMode, pgState?.evalLogitTemperature])
   const samplingCtrl = useMemo(() => {
     if (!activeModel) return null
-    const predict = (obs: number[]) => activeModel.predict(obs)[0]
-    return new SamplingModelController(predict)
-  }, [activeModel])
+    const T =
+      activeMode === "policy-gradient" ? (pgState?.rolloutSamplingTemperature ?? PG_DEFAULTS.rolloutSamplingTemperature) : 1
+    if (T >= 0.999 && T <= 1.001) {
+      return new SamplingModelController((obs: number[]) => activeModel.predictOnly(obs))
+    }
+    return new SamplingModelController((obs: number[]) =>
+      rolloutTemperedJumpProb(activeModel, obs, T),
+    )
+  }, [activeModel, activeMode, pgState?.rolloutSamplingTemperature])
 
   const isHuman = activeMode === "human"
   const isImitationEval = activeMode === "imitation" && !!imitState?.isEvaluating && !!imitState?.model
@@ -264,6 +321,10 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
   const isEvolutionIdleWithModel =
     isEvolutionArena && !evState?.isTraining && !evState?.isEvaluating && !!evState?.model && !evState?.runComplete
   const isEvolutionIdleNoModel = isEvolutionArena && !evState?.isTraining && !evState?.isEvaluating && !evState?.model
+  const showObservationInspector =
+    !isEvolutionArena &&
+    (!isHeadless || isEvolutionSinglePlayerReady) &&
+    !(activeMode === "policy-gradient" && isHeadless)
   const controller =
     isPolicyGradientTraining && samplingCtrl
       ? samplingCtrl
@@ -292,7 +353,8 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
 
   useEffect(() => {
     if (activeMode !== "human" && !isImitationEval && !isPolicyGradientEval && !isPolicyGradientTraining && !isEvolutionEval) {
-      setGameStarted(false)
+      queueMicrotask(() => setGameStarted(false))
+      wasInAgentEvalRef.current = false
     }
   }, [activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, isEvolutionEval])
 
@@ -300,13 +362,17 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
     if (activeMode !== "human") return
     if (gameStarted) {
       runStartTimeRef.current = Date.now()
-      setRunDurationSeconds(0)
-      setMeasuredFps(0)
       frameCountRef.current = 0
+      queueMicrotask(() => {
+        setRunDurationSeconds(0)
+        setMeasuredFps(0)
+      })
     } else {
       runStartTimeRef.current = null
-      setRunDurationSeconds(0)
-      setMeasuredFps(0)
+      queueMicrotask(() => {
+        setRunDurationSeconds(0)
+        setMeasuredFps(0)
+      })
     }
   }, [activeMode, gameStarted])
 
@@ -327,21 +393,23 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
     return () => ro.disconnect()
   }, [isHuman, activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, isHeadless])
 
-  const trajectoryRef = useRef<{ obs: number[]; action: number; logProb: number; reward: number; grounded: boolean }[]>([])
+  const trajectoryRef = useRef<{ obs: number[]; action: number; reward: number; grounded: boolean }[]>([])
   const onStepComplete = useCallback(
-    (obs: number[], action: number, logProb: number, reward: number, grounded: boolean) => {
+    (obs: number[], action: number, _logProb: number, reward: number, grounded: boolean) => {
       if (!isPolicyGradientTraining) return
-      trajectoryRef.current.push({ obs, action, logProb, reward, grounded })
+      trajectoryRef.current.push({ obs, action, reward, grounded })
     },
     [isPolicyGradientTraining]
   )
+  const runnerViewWidth =
+    activeMode === "policy-gradient" || activeMode === "evolution" ? SIM_VIEW_WIDTH : sceneWidth
 
   const showGame = activeMode === "human" || isImitationEval || isPolicyGradientEval || isPolicyGradientTraining || isEvolutionEval
-  const agentSimSpeed = isPolicyGradientTraining ? (pgState?.simSpeed ?? 1) : 1
+  const agentSimSpeed = isPolicyGradientTraining ? (pgState?.simSpeed ?? 100) : 1
   const runner = useGameRunner({
     controller,
     paused: isHeadless || !showGame,
-    viewWidth: showGame ? sceneWidth : 800,
+    viewWidth: showGame ? runnerViewWidth : SIM_VIEW_WIDTH,
     started: showGame ? gameStarted : false,
     simSpeed: agentSimSpeed,
     onStep: activeMode === "human" && imitState?.isRecording ? onStep : undefined,
@@ -355,22 +423,29 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
     if (activeMode === "policy-gradient" && !isPolicyGradientEval && !isPolicyGradientTraining) {
       runner.reset()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runner object identity changes every frame
   }, [activeMode, isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, runner.reset])
 
   useEffect(() => {
     if (!isHuman || !runner.gameOver || runCount === 0) return
     if (lastRecordedRunRef.current === runCount) return
     lastRecordedRunRef.current = runCount
-    setScoreHistory((prev) => [...prev, { name: String(runCount), value: runner.score }])
+    const recordedScore = runner.score
+    queueMicrotask(() => {
+      setScoreHistory((prev) => [...prev, { name: String(runCount), value: recordedScore }])
+    })
   }, [isHuman, runner.gameOver, runner.score, runCount])
 
   useEffect(() => {
     if (isPolicyGradientTraining && !gameStarted) {
       trajectoryRef.current = []
       runner.reset(Date.now())
-      setGameStarted(true)
-      setRunCount((c) => c + 1)
+      queueMicrotask(() => {
+        setGameStarted(true)
+        setRunCount((c) => c + 1)
+      })
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runner object identity changes every frame
   }, [isPolicyGradientTraining, gameStarted, runner.reset])
 
   useEffect(() => {
@@ -379,7 +454,6 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
       const trajectory = trajectoryRef.current.map((t) => ({
         obs: t.obs,
         action: t.action as 0 | 1,
-        logProb: t.logProb,
         reward: t.reward,
         grounded: t.grounded,
       }))
@@ -396,9 +470,24 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
       return
     }
     if (!isImitationEval && !isPolicyGradientEval && !isEvolutionEval) return
+
+    const inAgentEval = isImitationEval || isPolicyGradientEval || isEvolutionEval
+    if (inAgentEval && !wasInAgentEvalRef.current) {
+      wasInAgentEvalRef.current = true
+      queueMicrotask(() => {
+        runner.reset(Date.now())
+        setGameStarted(true)
+        setRunCount((c) => c + 1)
+      })
+      return
+    }
+
     if (!gameStarted) {
-      setGameStarted(true)
-      setRunCount((c) => c + 1)
+      queueMicrotask(() => {
+        runner.reset(Date.now())
+        setGameStarted(true)
+        setRunCount((c) => c + 1)
+      })
     } else if (runner.gameOver) {
       if (lastEvalReportedRef.current !== runCount) {
         lastEvalReportedRef.current = runCount
@@ -412,6 +501,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
       }, 0)
       return () => clearTimeout(id)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runner object identity changes every frame
   }, [isImitationEval, isPolicyGradientEval, isPolicyGradientTraining, isEvolutionEval, gameStarted, runner.gameOver, runner.score, runner.reset, imitActions, pgActions, runCount])
 
   useEffect(() => {
@@ -433,6 +523,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runner object identity changes every frame
   }, [activeMode, gameStarted, runner.gameOver, runner.reset])
 
   useEffect(() => {
@@ -464,7 +555,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
 
   return (
     <div className="flex flex-1 flex-col min-h-0 gap-4">
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-2" aria-live="polite" aria-atomic="true">
         <StatusBadge label={modeLabels[activeMode] ?? "Human"} color="primary" />
         <StatusBadge
           label={
@@ -477,7 +568,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
               : (activeMode === "imitation" && imitState?.isEvaluating)
                   || (activeMode === "policy-gradient" && pgState?.isEvaluating)
                   || (activeMode === "evolution" && evState?.isEvaluating)
-                ? "Evaluating"
+                ? "Testing"
                 : imitState?.isTraining || pgState?.isTraining || evState?.isTraining
                   ? "Training"
                   : "Ready"
@@ -496,35 +587,37 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
       <div
         className="relative flex-1 min-h-[200px] rounded-xl border border-border bg-card overflow-hidden"
         role="img"
-        aria-label="Game simulation canvas"
+        aria-label="Runner game view"
       >
         {isEvolutionArena ? (
           <EvolutionArena
-            agents={isEvolutionShowcase ? evState!.elites : []}
+            agents={isEvolutionShowcase ? evState!.elites : NO_EVOLUTION_ARENA_AGENTS}
             threshold={evState?.threshold ?? 0.5}
             onAllDead={evActions?.reportArenaComplete ?? (() => {})}
             overlay={
               isEvolutionEvaluating ? (
-                <div className="absolute inset-0 bg-black/30 flex flex-col items-center justify-center gap-2 pointer-events-none">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:150ms]" />
-                    <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:300ms]" />
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 z-[1]">
+                  <div className="flex flex-col items-center gap-2 rounded-md border border-border/60 bg-card/90 px-4 py-3 shadow-sm backdrop-blur-sm max-w-sm text-center">
+                    <div className="flex items-center gap-2" aria-hidden="true">
+                      <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                      <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:150ms]" />
+                      <div className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:300ms]" />
+                    </div>
+                    <span className="text-sm font-medium text-foreground/80">
+                      Evaluating generation {(evState?.generation ?? 0) + 1}…
+                    </span>
                   </div>
-                  <span className="text-sm font-medium text-foreground/70">
-                    Evaluating generation {(evState?.generation ?? 0) + 1}...
-                  </span>
                 </div>
               ) : isEvolutionIdleWithModel ? (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
-                    Training stopped — click Evolve to resume
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 z-[1]">
+                  <span className="text-[11px] text-muted-foreground rounded-md border border-border/60 bg-card/70 px-2.5 py-1.5 shadow-sm backdrop-blur-sm max-w-xs text-center">
+                    Paused—press Evolve for another generation
                   </span>
                 </div>
               ) : isEvolutionIdleNoModel ? (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
-                    Click Evolve to start training a population
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 z-[1]">
+                  <span className="text-[11px] text-muted-foreground rounded-md border border-border/60 bg-card/70 px-2.5 py-1.5 shadow-sm backdrop-blur-sm max-w-xs text-center">
+                    Press Evolve to start training
                   </span>
                 </div>
               ) : undefined
@@ -542,17 +635,17 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
             <div className="flex flex-col items-center gap-1">
               <span className="text-sm font-medium text-muted-foreground">
                 {activeMode === "policy-gradient" && isPolicyGradientRunFinished
-                  ? "Headless on"
+                  ? "Still headless"
                   : activeMode === "policy-gradient" && isPolicyGradientHeadlessStoppedMidRun
-                    ? "Training stopped"
-                    : "Running headless"}
+                    ? "Paused mid-run"
+                    : "Headless mode"}
               </span>
               <span className="text-xs text-muted-foreground/60 text-center max-w-xs px-2">
                 {activeMode === "policy-gradient" && isPolicyGradientRunFinished
-                  ? "Turn off Headless to see the canvas and Evaluate"
+                  ? "Turn headless off to watch the run, or use Evaluate for a deterministic policy"
                   : activeMode === "policy-gradient" && isPolicyGradientHeadlessStoppedMidRun
-                    ? "Turn off Headless to view progress, or Continue Training"
-                    : "Visual output paused for faster training"}
+                    ? "Turn headless off to view the canvas, or resume training"
+                    : "Canvas hidden—training skips rendering for speed"}
               </span>
             </div>
             <div className="mt-2 flex items-center gap-2" aria-hidden="true">
@@ -565,19 +658,10 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
           <div className="flex h-full flex-col items-center justify-center">
             <div
               ref={isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution" ? sceneRef : undefined}
-              className="relative w-full h-full bg-[#0A0C0F] flex items-end"
+              className="relative flex h-full w-full items-end bg-game-scene"
             >
-              <div className="absolute bottom-12 left-0 right-0 h-px bg-border" />
-              <div className="absolute bottom-0 left-0 right-0 h-12 border-t border-border/50">
-                {Array.from({ length: 40 }, (_, i) => (
-                  <div
-                    key={i}
-                    className="absolute bottom-0 h-1.5 w-px bg-border/30"
-                    style={{ left: `${i * 2.5}%` }}
-                    aria-hidden="true"
-                  />
-                ))}
-              </div>
+              <div className="absolute bottom-12 left-0 right-0 h-[0.5px] bg-game-line" />
+              <div className="absolute bottom-0 left-0 right-0 h-12 border-t-[0.5px] border-game-line/55" />
 
               <div
                 className="absolute"
@@ -600,41 +684,68 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                     aria-hidden="true"
                   />
                 )}
-                <div className="h-8 w-6 rounded-sm bg-primary shadow-[0_0_12px_rgba(59,130,246,0.3)]" />
-                {(() => {
-                  const isActive = showGame || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution"
-                  const grounded = isActive && runner.state && !runner.gameOver && (runner.state.playerY <= 0)
-                  const inAir = isActive && runner.state && !runner.gameOver && runner.state.playerY > 0
-                  return (
-                    <>
-                      <div
-                        className={`absolute -bottom-[10px] left-0.5 h-3 w-1.5 rounded-sm bg-primary/60 origin-top ${grounded ? "animate-walk-left" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
-                      />
-                      <div
-                        className={`absolute -bottom-[10px] right-0.5 h-3 w-1.5 rounded-sm bg-primary/60 origin-top ${grounded ? "animate-walk-right" : ""} ${inAir ? "rotate-[20deg]" : ""}`}
-                      />
-                    </>
-                  )
-                })()}
+                <RunnerCharacterFigure
+                  grounded={
+                    (showGame || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") &&
+                    !!runner.state &&
+                    !runner.gameOver &&
+                    runner.state.playerY <= 0
+                  }
+                  inAir={
+                    (showGame || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") &&
+                    !!runner.state &&
+                    !runner.gameOver &&
+                    runner.state.playerY > 0
+                  }
+                />
               </div>
 
-              {(isImitationEval || isPolicyGradientEval || isEvolutionEval) && (
+              {(isImitationEval ||
+                isPolicyGradientEval ||
+                isPolicyGradientTraining ||
+                isEvolutionEval) && (
                 <div
-                  className="absolute flex flex-col items-center gap-0.5 pointer-events-none"
+                  className="absolute flex flex-col items-center gap-0.5 pointer-events-none max-w-[14rem] text-center"
                   style={{
                     left: GAME_CONFIG.playerX + GAME_CONFIG.playerW / 2,
                     bottom: "calc(3rem + 10px + 10rem)",
                     transform: "translateX(-50%)",
                   }}
                 >
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
-                    Jump Probability
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50 flex items-center gap-1 justify-center">
+                    {isPolicyGradientTraining
+                      ? "P(jump) raw"
+                      : isPolicyGradientEval
+                        ? "Jump chance (eval)"
+                        : "Jump chance"}
+                    {isPolicyGradientTraining && (
+                      <InfoTooltip description="P(jump) from the policy head before eval spread or rollout tempering (sigmoid of the last logit). Near 0.5 is roughly unbiased. Early in training, player height and speed often move first; gap and headroom change as the next obstacle gets closer." />
+                    )}
                   </span>
                   <span className="text-2xl font-mono font-bold text-foreground/80 tabular-nums">
                     {runner.state && activeModel
-                      ? activeModel.predict(getObservation(runner.state))[0].toFixed(3)
+                      ? (() => {
+                          const raw = activeModel.predictOnly(getObservation(runner.state))
+                          if (isPolicyGradientEval && pgState) {
+                            const p = spreadEvalProbTowardHalf(raw, pgState.evalLogitTemperature ?? PG_DEFAULTS.evalLogitTemperature)
+                            return Number.isFinite(p) ? p.toFixed(3) : "—"
+                          }
+                          return Number.isFinite(raw) ? raw.toFixed(3) : "—"
+                        })()
                       : "0.000"}
                   </span>
+                  {isPolicyGradientTraining && pgState && (pgState.rolloutSamplingTemperature ?? PG_DEFAULTS.rolloutSamplingTemperature) > 1.01 && (
+                    <span className="text-[11px] font-mono text-muted-foreground tabular-nums">
+                      sample T={Number((pgState.rolloutSamplingTemperature ?? PG_DEFAULTS.rolloutSamplingTemperature).toFixed(2))}:{" "}
+                      {runner.state && activeModel
+                        ? rolloutTemperedJumpProb(
+                            activeModel,
+                            getObservation(runner.state),
+                            pgState.rolloutSamplingTemperature ?? PG_DEFAULTS.rolloutSamplingTemperature,
+                          ).toFixed(3)
+                        : "—"}
+                    </span>
+                  )}
                 </div>
               )}
 
@@ -748,7 +859,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                     <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">Space</kbd>
                     {" / "}
                     <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">↑</kbd>
-                    {" or click to start"}
+                    {" or tap Start"}
                   </span>
                   <button
                     type="button"
@@ -761,7 +872,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                       "hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     )}
                   >
-                    Start Game
+                    Start
                   </button>
                 </div>
               )}
@@ -770,10 +881,10 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                   <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
                     {imitState?.model
-                      ? "Model ready — click Evaluate to watch it play"
+                      ? "Model ready—use Evaluate to watch it play."
                       : imitState && imitState.datasetSize > 0
-                        ? "Dataset recorded — click Train Model to begin"
-                        : "Play in Human mode with Record on to collect training data"}
+                        ? "You have recorded data—press Train to fit the model."
+                        : "Record demos in Human mode first (enable Record, then play a few runs)."}
                   </span>
                 </div>
               )}
@@ -781,7 +892,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
               {isEvolutionSinglePlayerReady && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                   <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
-                    Best model ready — click Evaluate to watch it play
+                    Run complete—use Evaluate to watch the best network.
                   </span>
                 </div>
               )}
@@ -789,7 +900,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
               {showPolicyGradientReadyOnCanvas && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
                   <span className="text-sm text-muted-foreground text-center max-w-xs leading-relaxed">
-                    Policy ready — click Evaluate to watch it play
+                    Training finished—use Evaluate to watch the policy
                   </span>
                 </div>
               )}
@@ -833,8 +944,8 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
         <div className="flex shrink-0 flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
-              Updates Progress
-              <InfoTooltip description="Updates done vs cumulative target — Continue adds the next batch to the total. Clear resets all." />
+              Policy updates
+              <InfoTooltip description="Completed policy gradient steps versus the target for this run. Keep training extends the run; Clear resets policy training progress." />
             </span>
             <span className="text-[11px] font-mono font-medium text-muted-foreground tabular-nums">
               {(pgState?.updateCount ?? 0)}/
@@ -847,7 +958,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
             aria-valuenow={pgState?.updateCount ?? 0}
             aria-valuemin={0}
             aria-valuemax={(pgState?.totalUpdates ?? 0) > 0 ? (pgState?.totalUpdates ?? 0) : (pgState?.targetUpdates ?? 500)}
-            aria-label="Updates progress"
+            aria-label="Policy update progress"
           >
             <div
               className="h-full rounded-full bg-primary"
@@ -867,8 +978,8 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
         <div className="flex shrink-0 flex-col gap-2">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
-              Generation Progress
-              <InfoTooltip description="Current generation out of the target. Each generation evaluates the full population." />
+              Generations
+              <InfoTooltip description="Current generation index versus the target for this session. Each generation evaluates the full population." />
             </span>
             <span className="text-[11px] font-mono font-medium text-muted-foreground tabular-nums">
               {evState.generation}/{evState.targetGenerations}
@@ -880,7 +991,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
             aria-valuenow={evState.generation}
             aria-valuemin={0}
             aria-valuemax={evState.targetGenerations}
-            aria-label="Generation progress"
+            aria-label="Evolution generation progress"
           >
             <div
               className="h-full rounded-full bg-primary transition-all duration-300"
@@ -892,21 +1003,24 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
         </div>
       )}
 
-      <div className={cn(
-        "shrink-0",
-        (isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") && "grid grid-cols-[2fr_3fr] gap-4"
-      )}>
+      <div
+        className={cn(
+          "shrink-0",
+          (isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") &&
+            (showObservationInspector ? "grid grid-cols-[2fr_3fr] gap-4" : "grid grid-cols-1 gap-4"),
+        )}
+      >
         {isHuman && (
           <div className="min-w-0">
             {scoreHistory.length > 0 ? (
-              <ChartContainer data={scoreHistory} label="Score History" color="var(--primary)" />
+              <ChartContainer data={scoreHistory} label="Scores over time" color="var(--primary)" />
             ) : (
               <div className="flex flex-col gap-2">
                 <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                  Score History
+                  Scores over time
                 </span>
                 <div className="flex h-[180px] items-center justify-center rounded-md border border-dashed border-border">
-                  <span className="text-xs text-muted-foreground">No runs yet</span>
+                  <span className="text-xs text-muted-foreground">No scores yet—play a few runs</span>
                 </div>
               </div>
             )}
@@ -919,17 +1033,17 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                 data={imitState.lossHistory}
                 label="Training Loss"
                 color="var(--primary)"
-                tooltip="Measures how wrong the model's predictions are during training. Lower is better. The chart shows loss over each epoch."
+                tooltip="Cross-entropy loss vs recorded labels. Lower is a closer fit. One point per epoch."
               />
             ) : (
               <div className="flex flex-col gap-2">
                 <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                   Training Loss
-                  <InfoTooltip description="Measures how wrong the model's predictions are during training. Lower is better. The chart shows loss over each epoch." />
+                  <InfoTooltip description="Same metric as the chart: one value per training epoch." />
                 </span>
                 <div className="flex h-[180px] items-center justify-center rounded-md border border-dashed border-border">
                   <span className="text-xs text-muted-foreground">
-                    {imitState?.datasetSize === 0 ? "Record data first" : "Train to see loss"}
+                    {imitState?.datasetSize === 0 ? "Need data first" : "Hit Train to plot this"}
                   </span>
                 </div>
               </div>
@@ -937,25 +1051,47 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
           </div>
         )}
         {activeMode === "policy-gradient" && (
-          <div className="min-w-0">
-            {pgState?.returnHistory && pgState.returnHistory.length > 0 ? (
-              <ChartContainer
-                data={pgState.returnHistory}
-                label="Average Return"
-                color="var(--accent)"
-                tooltip="Average episode return per update. Higher is better."
-              />
-            ) : (
-              <div className="flex flex-col gap-2">
-                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                  Average Return
-                  <InfoTooltip description="Average episode return per update. Higher is better." />
-                </span>
-                <div className="h-[180px] flex items-center justify-center rounded-md border border-dashed border-border">
-                  <span className="text-xs text-muted-foreground">Train to see returns</span>
+          <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 md:gap-3">
+            <div className="min-w-0">
+              {pgState?.returnHistory && pgState.returnHistory.length > 0 ? (
+                <ChartContainer
+                  data={pgState.returnHistory}
+                  label="Avg episode score (stochastic)"
+                  color="var(--accent)"
+                  tooltip="Mean episode distance per batch of rollouts. Stochastic sampling makes this noisy even when learning is improving."
+                />
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    Avg episode score (stochastic)
+                    <InfoTooltip description="Noisy because actions are sampled during training. Compare with Greedy eval for a deterministic readout." />
+                  </span>
+                  <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed border-border">
+                    <span className="text-xs text-muted-foreground">Train to plot this curve</span>
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
+            <div className="min-w-0">
+              {pgState?.greedyEvalHistory && pgState.greedyEvalHistory.length > 0 ? (
+                <ChartContainer
+                  data={pgState.greedyEvalHistory}
+                  label="Greedy policy (mean score)"
+                  color="var(--primary)"
+                  tooltip="After each policy update: deterministic greedy episodes on fixed seeds. Auto jump τ searches τ; manual mode uses your threshold."
+                />
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                    Greedy policy (mean score)
+                    <InfoTooltip description="Appears after the first update, using the same seeds each time for comparable runs. If greedy eval jumps too often, adjust Auto jump τ or manual τ." />
+                  </span>
+                  <div className="flex h-[160px] items-center justify-center rounded-md border border-dashed border-border">
+                    <span className="text-xs text-muted-foreground">Appears after each policy update</span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
         {activeMode === "evolution" && (
@@ -965,26 +1101,24 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                 data={evState.fitnessHistory}
                 label="Best Fitness"
                 color="var(--accent)"
-                tooltip="Top fitness each generation, averaged across eval seeds."
+                tooltip="Best fitness each generation, averaged over evaluation seeds so one lucky layout does not dominate."
               />
             ) : (
               <div className="flex flex-col gap-2">
                 <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                   Best Fitness
-                  <InfoTooltip description="Top fitness each generation, averaged across eval seeds." />
+                  <InfoTooltip description="Same as the chart: mean over evaluation seeds to reduce variance from a single seed." />
                 </span>
                 <div className="h-[180px] flex items-center justify-center rounded-md border border-dashed border-border">
-                  <span className="text-xs text-muted-foreground">Evolve to see fitness</span>
+                  <span className="text-xs text-muted-foreground">Run Evolve to plot fitness</span>
                 </div>
               </div>
             )}
           </div>
         )}
-        {!isEvolutionArena &&
-          (!isHeadless || isEvolutionSinglePlayerReady) &&
-          !(activeMode === "policy-gradient" && isHeadless) && <ObservationInspector
+        {showObservationInspector && <ObservationInspector
           observations={
-            (showGame || activeMode === "imitation") && runner.state
+            (showGame || activeMode === "imitation" || activeMode === "policy-gradient") && runner.state
               ? (() => {
                   const s = runner.state!
                   const obs = getObservation(s)
@@ -998,13 +1132,13 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                   }
                   const rawDist = nextObs ? Math.max(0, nextObs.x - GAME_CONFIG.playerX) : 0
                   return [
-                    { label: "Distance to Obstacle", value: obs[0], max: 1, displayValue: String(Math.floor(rawDist)) },
-                    { label: "Obstacle Width", value: obs[1], max: 1, displayValue: String(Math.round(nextObs?.width ?? 0)) },
-                    { label: "Obstacle Height", value: obs[2], max: 1, displayValue: String(Math.round(nextObs?.height ?? 0)) },
-                    { label: "Player Y", value: obs[3], max: 1, displayValue: s.playerY.toFixed(1) },
-                    { label: "Player Velocity", value: obs[4], max: 1, displayValue: s.playerVy.toFixed(2) },
-                    { label: "Game Speed", value: obs[5], max: 1, displayValue: s.gameSpeed.toFixed(2) },
-                    { label: "Height Clearance", value: obs[6], max: 1, displayValue: obs[6].toFixed(2) },
+                    { label: "Gap ahead", value: obs[0], max: 1, displayValue: String(Math.floor(rawDist)) },
+                    { label: "Obstacle width", value: obs[1], max: 1, displayValue: String(Math.round(nextObs?.width ?? 0)) },
+                    { label: "Obstacle height", value: obs[2], max: 1, displayValue: String(Math.round(nextObs?.height ?? 0)) },
+                    { label: "Player height", value: obs[3], max: 1, displayValue: s.playerY.toFixed(1) },
+                    { label: "Vertical speed", value: obs[4], max: 1, displayValue: s.playerVy.toFixed(2) },
+                    { label: "Run speed", value: obs[5], max: 1, displayValue: s.gameSpeed.toFixed(2) },
+                    { label: "Headroom", value: obs[6], max: 1, displayValue: obs[6].toFixed(2) },
                   ]
                 })()
               : undefined
@@ -1017,7 +1151,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
           <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
               Final Loss
-              <InfoTooltip description="The loss value at the end of training. Lower means the model learned the training data better." />
+              <InfoTooltip description="Cross-entropy loss when the last training run stopped. Lower means predictions are closer to your labels." />
             </span>
             <span className="text-lg font-mono font-semibold tabular-nums text-primary">
               {imitState?.finalLoss != null ? imitState.finalLoss.toFixed(4) : "—"}
@@ -1026,7 +1160,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
           <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
               Precision
-              <InfoTooltip description="Of the times the model predicted jump, how often was the human also jumping? High precision = fewer unnecessary jumps." />
+              <InfoTooltip description="Fraction of predicted jumps that matched a jump in your data (true positives over predicted positives)." />
             </span>
             <span className="text-lg font-mono font-semibold tabular-nums text-primary">
               {imitState?.metrics ? imitState.metrics.precision.toFixed(3) : "—"}
@@ -1035,7 +1169,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
           <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
               Recall
-              <InfoTooltip description="Of the times the human jumped, how often did the model also predict jump? High recall = catches most of the jump moments." />
+              <InfoTooltip description="Fraction of your actual jumps that the model also predicted (true positives over actual jumps)." />
             </span>
             <span className="text-lg font-mono font-semibold tabular-nums text-primary">
               {imitState?.metrics ? imitState.metrics.recall.toFixed(3) : "—"}
@@ -1044,20 +1178,20 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
           <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
             <span className="text-[11px] font-medium text-muted-foreground flex items-center gap-1.5">
               F1
-              <InfoTooltip description="Single score balancing precision and recall. F1 = 1 is perfect; lower means the model misses jumps, jumps too often, or both." />
+              <InfoTooltip description="Harmonic mean of precision and recall on your full recorded dataset at the current jump threshold. 1.0 means both metrics are perfect." />
             </span>
             <span className="text-lg font-mono font-semibold tabular-nums text-accent">
               {imitState?.metrics ? imitState.metrics.f1.toFixed(3) : "—"}
             </span>
           </div>
           <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
-            <span className="text-[11px] font-medium text-muted-foreground">Best Eval Score</span>
+            <span className="text-[11px] font-medium text-muted-foreground">Best eval score</span>
             <span className="text-lg font-mono font-semibold tabular-nums text-accent">
               {(imitState?.evalRunCount ?? 0) > 0 ? imitState?.bestEvalScore : "—"}
             </span>
           </div>
           <div className="flex flex-col gap-1 rounded-lg bg-secondary p-3 min-w-0">
-            <span className="text-[11px] font-medium text-muted-foreground">Eval Runs</span>
+            <span className="text-[11px] font-medium text-muted-foreground">Eval runs</span>
             <span className="text-lg font-mono font-semibold tabular-nums text-primary">
               {imitState?.evalRunCount ?? 0}
             </span>

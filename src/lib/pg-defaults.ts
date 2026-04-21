@@ -1,0 +1,15 @@
+export const PG_DEFAULTS = {
+  gamma: 0.99,
+  gaeLambda: 0.97,
+  lr: 0.004,
+  episodesPerUpdate: 24,
+  updates: 500,
+  clipGrad: 1.5,
+  entropyCoef: 0.03,
+  simSpeed: 100,
+  jumpThreshold: 0.5,
+  thresholdAuto: true,
+  evalLogitTemperature: 4,
+  rolloutSamplingTemperature: 1,
+  actorOutputBias: -0.65,
+}

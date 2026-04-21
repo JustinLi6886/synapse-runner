@@ -1,4 +1,5 @@
 import type { Action } from "@/game/types"
+import { MAX_DATASET_SAMPLES, MAX_OBS_COMPONENTS } from "@/lib/sanitize"
 
 export interface DataSample {
   obs: number[]
@@ -61,8 +62,29 @@ export class Dataset {
     return JSON.stringify(this.samples)
   }
 
-  importJSON(json: string): void {
-    const parsed = JSON.parse(json) as DataSample[]
-    this.samples = parsed
+  importJSON(json: string): boolean {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(json)
+    } catch {
+      return false
+    }
+    if (!Array.isArray(parsed)) return false
+    const rows = parsed.length > MAX_DATASET_SAMPLES ? parsed.slice(0, MAX_DATASET_SAMPLES) : parsed
+    const out: DataSample[] = []
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue
+      const o = row as { obs?: unknown; action?: unknown }
+      if (!Array.isArray(o.obs)) continue
+      const action: 0 | 1 = o.action === 1 ? 1 : 0
+      const rawObs = o.obs.length > MAX_OBS_COMPONENTS ? o.obs.slice(0, MAX_OBS_COMPONENTS) : o.obs
+      const obs = rawObs.map((x) => {
+        const n = Number(x)
+        return Number.isFinite(n) ? n : 0
+      })
+      out.push({ obs, action })
+    }
+    this.samples = out
+    return true
   }
 }

@@ -1,9 +1,9 @@
 import { NeuralNetwork } from "@/nn/NeuralNetwork"
 import { createGameState, step, getObservation } from "@/game/engine"
+import { SIM_VIEW_WIDTH } from "@/game/config"
 import type { Action } from "@/game/types"
 
 const FIXED_DT = 1 / 60
-const VIEW_WIDTH = 800
 const MAX_EVAL_SCORE = 1000000
 
 function createSeededRandom(seed: number): () => number {
@@ -16,7 +16,6 @@ function createSeededRandom(seed: number): () => number {
   }
 }
 
-// Box-Muller transform: uniform [0,1) pair → standard normal
 function gaussianPair(rng: () => number): [number, number] {
   const u1 = Math.max(1e-10, rng())
   const u2 = rng()
@@ -25,18 +24,15 @@ function gaussianPair(rng: () => number): [number, number] {
   return [r * Math.cos(theta), r * Math.sin(theta)]
 }
 
-/**
- * Evaluate a single network's fitness: average score over multiple seeds.
- * No proximity gate — agent decides on every grounded frame.
- */
-export function evaluateFitness(
+function evaluateFitness(
   nn: NeuralNetwork,
   seeds: number[],
   threshold: number,
 ): number {
+  if (seeds.length === 0) return 0
   let totalScore = 0
   for (let i = 0; i < seeds.length; i++) {
-    let state = createGameState(VIEW_WIDTH, seeds[i])
+    let state = createGameState(SIM_VIEW_WIDTH, seeds[i])
     while (!state.gameOver && state.distance < MAX_EVAL_SCORE) {
       const obs = getObservation(state)
       const grounded = state.playerY <= 0
@@ -53,14 +49,9 @@ export function evaluateFitness(
   return totalScore / seeds.length
 }
 
-/**
- * Mutate a network's weights and biases in-place with Gaussian noise.
- * Each child gets its own RNG stream seeded by (genSeed + childIndex).
- */
 function mutateNetwork(nn: NeuralNetwork, sigma: number, rng: () => number): void {
   const weights = nn.getWeights()
   const biases = nn.getBiases()
-  // weights[layer][out][in]
   for (let l = 0; l < weights.length; l++) {
     for (let i = 0; i < weights[l].length; i++) {
       for (let j = 0; j < weights[l][i].length; j += 2) {
@@ -71,7 +62,6 @@ function mutateNetwork(nn: NeuralNetwork, sigma: number, rng: () => number): voi
         }
       }
     }
-    // biases[layer][out]
     for (let i = 0; i < biases[l].length; i += 2) {
       const [n1, n2] = gaussianPair(rng)
       biases[l][i] += sigma * n1
@@ -91,22 +81,12 @@ export interface EvolutionConfig {
   threshold: number
 }
 
-export interface GenerationResult {
+interface GenerationResult {
   bestFitness: number
   avgFitness: number
   fitnesses: number[]
 }
 
-/**
- * Run one generation of evolution.
- * 1. Evaluate all individuals
- * 2. Sort by fitness (descending)
- * 3. Keep elites unchanged
- * 4. Fill rest by cloning random elites + Gaussian mutation
- *
- * Returns the result and the new population (elites first, then mutated children).
- * The population array is reordered: indices [0..eliteCount) are elites.
- */
 export function evolveGeneration(
   population: NeuralNetwork[],
   config: EvolutionConfig,
@@ -115,41 +95,41 @@ export function evolveGeneration(
 ): { result: GenerationResult; population: NeuralNetwork[] } | null {
   const { populationSize, eliteCount, mutationSigma, evalSeeds, threshold } = config
 
-  // Build eval seeds from generation seed
+  if (populationSize < 1) return null
+
+  const popLen = population.length
+  if (popLen === 0) return null
+
   const seedRng = createSeededRandom(generationSeed)
   const seeds: number[] = []
   for (let i = 0; i < evalSeeds; i++) {
     seeds.push(Math.floor(seedRng() * 2147483647))
   }
 
-  // Evaluate fitness for each individual
   const fitnesses: number[] = []
-  for (let i = 0; i < population.length; i++) {
+  for (let i = 0; i < popLen; i++) {
     if (shouldStop?.()) return null
     fitnesses.push(evaluateFitness(population[i], seeds, threshold))
   }
 
-  // Sort indices by fitness descending
-  const indices = Array.from({ length: populationSize }, (_, i) => i)
+  const indices = Array.from({ length: popLen }, (_, i) => i)
   indices.sort((a, b) => fitnesses[b] - fitnesses[a])
 
   const sortedFitnesses = indices.map((i) => fitnesses[i])
-  const avgFitness = sortedFitnesses.reduce((a, b) => a + b, 0) / populationSize
+  const avgFitness = sortedFitnesses.reduce((a, b) => a + b, 0) / popLen
 
-  // Build next generation
+  const numElites = Math.min(Math.max(1, eliteCount), populationSize, popLen)
+
   const nextPop: NeuralNetwork[] = []
 
-  // Elites survive unchanged
-  for (let i = 0; i < eliteCount; i++) {
+  for (let i = 0; i < numElites; i++) {
     nextPop.push(population[indices[i]].clone())
   }
 
-  // Fill remaining slots: clone a random elite, then mutate
   const mutRng = createSeededRandom(generationSeed ^ 0x12345678)
-  for (let i = eliteCount; i < populationSize; i++) {
-    const parentIdx = Math.floor(mutRng() * eliteCount)
+  for (let i = numElites; i < populationSize; i++) {
+    const parentIdx = Math.floor(mutRng() * numElites)
     const child = nextPop[parentIdx].clone()
-    // Each child gets its own independent RNG stream
     const childRng = createSeededRandom(generationSeed * 31 + i * 7919)
     mutateNetwork(child, mutationSigma, childRng)
     nextPop.push(child)
@@ -165,9 +145,6 @@ export function evolveGeneration(
   }
 }
 
-/**
- * Create an initial random population.
- */
 export function createPopulation(
   size: number,
   layers: number[],

@@ -6,39 +6,80 @@
 :root {
   --font-inter: "Inter", system-ui, sans-serif;
   --font-jetbrains-mono: "JetBrains Mono", monospace;
-  --background: #0F1115;
-  --foreground: #E2E8F0;
-  --card: #171A21;
-  --card-foreground: #E2E8F0;
-  --popover: #171A21;
-  --popover-foreground: #E2E8F0;
-  --primary: #3B82F6;
-  --primary-foreground: #FFFFFF;
-  --secondary: #1E2230;
-  --secondary-foreground: #CBD5E1;
-  --muted: #1E2230;
-  --muted-foreground: #94A3B8;
-  --accent: #10B981;
-  --accent-foreground: #FFFFFF;
-  --destructive: #EF4444;
-  --destructive-foreground: #FFFFFF;
-  --border: #22262F;
-  --input: #22262F;
-  --ring: #3B82F6;
-  --chart-1: #3B82F6;
-  --chart-2: #10B981;
-  --chart-3: #64748B;
-  --chart-4: #F59E0B;
-  --chart-5: #EF4444;
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #334155;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #059669;
+  --accent-foreground: #ffffff;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #2563eb;
+  --chart-1: #2563eb;
+  --chart-2: #059669;
+  --chart-3: #64748b;
+  --chart-4: #d97706;
+  --chart-5: #dc2626;
   --radius: 0.75rem;
-  --sidebar: #171A21;
-  --sidebar-foreground: #E2E8F0;
-  --sidebar-primary: #3B82F6;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #1E2230;
-  --sidebar-accent-foreground: #E2E8F0;
-  --sidebar-border: #22262F;
-  --sidebar-ring: #3B82F6;
+  --sidebar: #f1f5f9;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #2563eb;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e2e8f0;
+  --sidebar-accent-foreground: #0f172a;
+  --sidebar-border: #e2e8f0;
+  --sidebar-ring: #2563eb;
+  --game-scene: #dce3ee;
+  --game-line: #475569;
+  color-scheme: light;
+}
+
+html.dark {
+  --background: #0f1115;
+  --foreground: #e2e8f0;
+  --card: #171a21;
+  --card-foreground: #e2e8f0;
+  --popover: #171a21;
+  --popover-foreground: #e2e8f0;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #1e2230;
+  --secondary-foreground: #cbd5e1;
+  --muted: #1e2230;
+  --muted-foreground: #94a3b8;
+  --accent: #10b981;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #22262f;
+  --input: #22262f;
+  --ring: #3b82f6;
+  --chart-1: #3b82f6;
+  --chart-2: #10b981;
+  --chart-3: #64748b;
+  --chart-4: #f59e0b;
+  --chart-5: #ef4444;
+  --sidebar: #171a21;
+  --sidebar-foreground: #e2e8f0;
+  --sidebar-primary: #3b82f6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1e2230;
+  --sidebar-accent-foreground: #e2e8f0;
+  --sidebar-border: #22262f;
+  --sidebar-ring: #3b82f6;
+  --game-scene: #0a0c0f;
+  --game-line: #64748b;
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -80,6 +121,8 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-game-scene: var(--game-scene);
+  --color-game-line: var(--game-line);
 }
 
 @layer base {
@@ -104,4 +147,19 @@
 }
 .animate-walk-right {
   animation: walk-right 0.2s ease-in-out infinite;
+}
+
+@keyframes arm-pump-left {
+  0%, 100% { transform: rotate(45deg); }
+  50% { transform: rotate(15deg); }
+}
+@keyframes arm-pump-right {
+  0%, 100% { transform: rotate(-15deg); }
+  50% { transform: rotate(-45deg); }
+}
+.animate-arm-left {
+  animation: arm-pump-left 0.2s ease-in-out infinite;
+}
+.animate-arm-right {
+  animation: arm-pump-right 0.2s ease-in-out infinite;
 }

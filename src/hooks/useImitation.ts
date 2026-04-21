@@ -5,6 +5,8 @@ import { trainImitation } from "@/ai/imitation"
 import type { Action } from "@/game/types"
 import type { DataSample } from "@/ai/dataset"
 import { getPersisted, schedulePersist } from "@/lib/app-persist"
+import { toast } from "@/lib/toast"
+import { sanitizeImportedText } from "@/lib/sanitize"
 
 function createInitialDataset(): Dataset {
   const ds = new Dataset()
@@ -48,7 +50,7 @@ function computePRF1(model: NeuralNetwork, samples: DataSample[], threshold: num
     fp = 0,
     fn = 0
   for (const s of samples) {
-    const pred = model.predict(s.obs)[0] >= threshold ? 1 : 0
+    const pred = model.predictOnly(s.obs) >= threshold ? 1 : 0
     const actual = s.action
     if (pred === 1 && actual === 1) tp++
     else if (pred === 1 && actual === 0) fp++
@@ -176,16 +178,27 @@ export function useImitation(): [ImitationState, ImitationActions] {
     a.download = "imitation-dataset.json"
     a.click()
     URL.revokeObjectURL(url)
+    toast.success("Dataset exported")
   }, [])
 
   const importDataset = useCallback((json: string) => {
-    datasetRef.current!.importJSON(json)
+    const text = sanitizeImportedText(json)
+    if (!text) {
+      toast.error("Import rejected (empty or invalid)")
+      return
+    }
+    const ok = datasetRef.current!.importJSON(text)
     syncStats()
+    if (ok) toast.success("Dataset imported")
+    else toast.error("Could not import dataset (invalid JSON or format)")
   }, [syncStats])
 
   const exportModel = useCallback(() => {
     const m = model
-    if (!m) return
+    if (!m) {
+      toast.error("No model to export")
+      return
+    }
     const json = m.exportWeights()
     const blob = new Blob([json], { type: "application/json" })
     const url = URL.createObjectURL(blob)
@@ -194,17 +207,24 @@ export function useImitation(): [ImitationState, ImitationActions] {
     a.download = "imitation-model.json"
     a.click()
     URL.revokeObjectURL(url)
+    toast.success("Model exported")
   }, [model])
 
   const importModel = useCallback((json: string) => {
+    const text = sanitizeImportedText(json)
+    if (!text) {
+      toast.error("Import rejected (empty or invalid)")
+      return
+    }
     try {
-      const nn = NeuralNetwork.fromWeights(json)
+      const nn = NeuralNetwork.fromWeights(text)
       setModel(nn)
       setLossHistory([])
       setFinalLoss(null)
       setMetrics(null)
+      toast.success("Model imported")
     } catch {
-      // Invalid JSON or shape mismatch
+      toast.error("Could not import model (invalid file or shape)")
     }
   }, [])
 

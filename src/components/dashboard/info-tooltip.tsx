@@ -29,10 +29,17 @@ export function InfoTooltip({ description }: { description: string }) {
     <>
       <span
         ref={ref}
-        className="inline-flex cursor-help"
+        role="button"
+        tabIndex={0}
+        className="inline-flex cursor-help rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         aria-label={description}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
+        onFocus={() => setHovered(true)}
+        onBlur={() => setHovered(false)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") (e.target as HTMLElement).blur()
+        }}
       >
         <Info className="h-3.5 w-3.5 text-muted-foreground shrink-0" aria-hidden="true" />
       </span>
@@ -42,7 +49,7 @@ export function InfoTooltip({ description }: { description: string }) {
             className={cn(
               "fixed z-[9999] px-4 py-3 rounded-lg -translate-y-1/2",
               "text-sm font-normal text-popover-foreground bg-popover border border-border shadow-lg",
-              "min-w-[280px] max-w-[400px] whitespace-normal leading-relaxed",
+              "max-w-[min(400px,calc(100vw-1.5rem))] min-w-0 sm:min-w-[240px] whitespace-normal leading-relaxed",
               "pointer-events-none"
             )}
             style={{ top: pos.top, left: pos.left }}

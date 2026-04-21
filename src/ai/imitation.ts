@@ -1,7 +1,7 @@
 import { NeuralNetwork } from "@/nn/NeuralNetwork"
 import type { DataSample } from "./dataset"
 
-export interface EpochResult {
+interface EpochResult {
   epoch: number
   loss: number
 }
@@ -41,7 +41,6 @@ export async function trainImitation(
 
     onEpoch?.({ epoch: epoch + 1, loss: totalLoss / Math.max(1, batches) })
 
-    // Yield to UI between epochs
     await new Promise((r) => requestAnimationFrame(r))
   }
 }

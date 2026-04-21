@@ -1,12 +1,13 @@
 import { useRef, useState, useCallback, useEffect } from "react"
 import { createGameState, step, getObservation } from "@/game/engine"
+import { SIM_VIEW_WIDTH } from "@/game/config"
 import type { GameState, Action } from "@/game/types"
 import type { Controller } from "@/ai/controller"
 
 const FIXED_DT = 1 / 60
 const MAX_ACCUM = 0.1
 
-export interface UseGameRunnerOptions {
+interface UseGameRunnerOptions {
   controller: Controller
   paused: boolean
   viewWidth?: number
@@ -16,7 +17,15 @@ export interface UseGameRunnerOptions {
   onStepComplete?: (obs: number[], action: Action, logProb: number, reward: number, grounded: boolean) => void
 }
 
-export function useGameRunner({ controller, paused, viewWidth = 800, started = true, simSpeed = 1, onStep, onStepComplete }: UseGameRunnerOptions) {
+export function useGameRunner({
+  controller,
+  paused,
+  viewWidth = SIM_VIEW_WIDTH,
+  started = true,
+  simSpeed = 1,
+  onStep,
+  onStepComplete,
+}: UseGameRunnerOptions) {
   const [state, setState] = useState<GameState | null>(null)
   const [bestScore, setBestScore] = useState(0)
   const stateRef = useRef<GameState | null>(null)
@@ -72,6 +81,13 @@ export function useGameRunner({ controller, paused, viewWidth = 800, started = t
             score: Math.floor(current.distance),
             steps: stepCountRef.current,
           })
+        }
+        if (current.gameOver) {
+          const s = Math.floor(current.distance)
+          if (s > bestScoreRef.current) {
+            bestScoreRef.current = s
+            setBestScore(s)
+          }
         }
         setState(current)
         rafId = requestAnimationFrame(loop)

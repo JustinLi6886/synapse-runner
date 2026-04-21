@@ -1,6 +1,6 @@
 const EPS = 1e-7
 
-export function binaryCrossEntropy(p: number, y: number): number {
+function binaryCrossEntropy(p: number, y: number): number {
   const pc = Math.max(EPS, Math.min(1 - EPS, p))
   return -(y * Math.log(pc) + (1 - y) * Math.log(1 - pc))
 }

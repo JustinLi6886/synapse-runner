@@ -13,25 +13,25 @@ const modes: Mode[] = [
   {
     id: "human",
     title: "Human",
-    description: "Manual keyboard control",
+    description: "You control the run (keyboard or tap)",
     icon: User,
   },
   {
     id: "imitation",
     title: "Imitation Learning",
-    description: "Supervised behavioral cloning",
+    description: "Behavioral cloning from your demos",
     icon: Eye,
   },
   {
     id: "policy-gradient",
     title: "Policy Gradient (RL)",
-    description: "REINFORCE with baseline",
+    description: "Actor–critic on game rewards",
     icon: Zap,
   },
   {
     id: "evolution",
     title: "Evolution Strategy",
-    description: "Population-based optimization",
+    description: "Population search—mutate and select",
     icon: Dna,
   },
 ]
@@ -39,6 +39,7 @@ const modes: Mode[] = [
 interface ModeSelectorProps {
   activeMode: string
   onModeChange: (mode: string) => void
+  modeLocked?: boolean
 }
 
 function modeActiveStyles(modeId: string): { button: string; icon: string } {
@@ -103,7 +104,7 @@ function modeInactiveStyles(modeId: string): { button: string; icon: string; tit
   }
 }
 
-export function ModeSelector({ activeMode, onModeChange }: ModeSelectorProps) {
+export function ModeSelector({ activeMode, onModeChange, modeLocked }: ModeSelectorProps) {
   const primaryModes = modes.filter((m) => m.id === "human" || m.id === "imitation")
   const otherModes = modes.filter((m) => m.id !== "human" && m.id !== "imitation")
 
@@ -116,6 +117,7 @@ export function ModeSelector({ activeMode, onModeChange }: ModeSelectorProps) {
       <button
         key={mode.id}
         type="button"
+        disabled={modeLocked}
         onClick={() => onModeChange(mode.id)}
         role="radio"
         aria-checked={isActive}
@@ -123,7 +125,8 @@ export function ModeSelector({ activeMode, onModeChange }: ModeSelectorProps) {
         className={cn(
           "group flex items-center gap-3 rounded-lg border p-3 text-left transition-all",
           "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
-          isActive ? accent.button : muted.button
+          isActive ? accent.button : muted.button,
+          modeLocked && "opacity-50 cursor-not-allowed"
         )}
       >
         <div
@@ -154,9 +157,9 @@ export function ModeSelector({ activeMode, onModeChange }: ModeSelectorProps) {
   }
 
   return (
-    <div className="flex flex-col gap-2" role="radiogroup" aria-label="Training mode selector">
+    <div className="flex flex-col gap-2" role="radiogroup" aria-label="How to run or train the agent">
       <span className="text-[11px] text-muted-foreground leading-snug">
-        Choose how the agent is controlled or trained — settings are in the panel below.
+        Choose who drives, then set training options in the panel below.
       </span>
       <div className="grid grid-cols-2 gap-2">
         {primaryModes.map((m) => renderMode(m, false))}

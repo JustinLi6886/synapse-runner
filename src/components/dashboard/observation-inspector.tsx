@@ -2,7 +2,7 @@ import { useState } from "react"
 import { ChevronDown, ChevronRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-export interface ObservationFeature {
+interface ObservationFeature {
   label: string
   value: number
   max: number
@@ -10,13 +10,13 @@ export interface ObservationFeature {
 }
 
 const DEFAULT_OBSERVATIONS: ObservationFeature[] = [
-  { label: "Distance to Obstacle", value: 1, max: 1, displayValue: "0" },
-  { label: "Obstacle Width", value: 0, max: 1, displayValue: "0" },
-  { label: "Obstacle Height", value: 0, max: 1, displayValue: "0" },
-  { label: "Player Y", value: 0, max: 1, displayValue: "0.0" },
-  { label: "Player Velocity", value: 0.5, max: 1, displayValue: "0.00" },
-  { label: "Game Speed", value: 0.2, max: 1, displayValue: "1.00" },
-  { label: "Height Clearance", value: 0, max: 1, displayValue: "0.00" },
+  { label: "Gap ahead", value: 1, max: 1, displayValue: "0" },
+  { label: "Obstacle width", value: 0, max: 1, displayValue: "0" },
+  { label: "Obstacle height", value: 0, max: 1, displayValue: "0" },
+  { label: "Player height", value: 0, max: 1, displayValue: "0.0" },
+  { label: "Vertical speed", value: 0.5, max: 1, displayValue: "0.00" },
+  { label: "Run speed", value: 0.2, max: 1, displayValue: "1.00" },
+  { label: "Headroom", value: 0, max: 1, displayValue: "0.00" },
 ]
 
 interface ObservationInspectorProps {
@@ -42,7 +42,7 @@ export function ObservationInspector({ observations: observationsOverride, class
         )}
       >
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Observation Inspector
+          Input vector (normalized)
         </h3>
         {isOpen ? (
           <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -59,7 +59,7 @@ export function ObservationInspector({ observations: observationsOverride, class
             const pct = clamp01(normalized) * 100
             const ariaValue = feature.max === 1 ? normalized : feature.value
             const animateBar =
-              feature.label === "Obstacle Width" || feature.label === "Obstacle Height"
+              feature.label === "Obstacle width" || feature.label === "Obstacle height"
             return (
               <div key={feature.label} className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
