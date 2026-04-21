@@ -1,5 +1,5 @@
 import { useRef } from "react"
-import { Download, Upload, Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react"
+import { Download, Github, Upload, Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { APP_VERSION } from "@/version"
 import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
@@ -76,6 +76,32 @@ export function TopNav({
           <span className="text-[10px] font-medium tabular-nums text-muted-foreground" title={`Version ${APP_VERSION}`}>
             v{APP_VERSION}
           </span>
+          <a
+            href="https://github.com/JustinLi6886/synapse-runner"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="View source on GitHub"
+            className={cn(
+              "ml-0.5 flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-muted-foreground transition-colors",
+              "hover:bg-secondary hover:text-card-foreground",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            )}
+          >
+            <Github className="h-4 w-4 shrink-0" aria-hidden />
+            <span className="text-[11px] font-medium">GitHub</span>
+          </a>
+          <a
+            href="https://github.com/JustinLi6886"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(
+              "text-[11px] font-medium text-muted-foreground whitespace-nowrap select-none transition-colors",
+              "hover:text-foreground hover:underline underline-offset-2",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:rounded-sm",
+            )}
+          >
+            Made by Justin Li
+          </a>
           <button
             type="button"
             onClick={() => onThemeChange(theme === "dark" ? "light" : "dark")}
@@ -94,7 +120,7 @@ export function TopNav({
       </div>
 
       {(showImitationModelControls || showPgModelControls || showEvolutionModelControls) && (
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 shrink-0">
           {showImitationModelControls ? (
             <>
               <button
