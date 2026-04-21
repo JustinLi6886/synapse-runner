@@ -1,1 +1,3 @@
-export const APP_VERSION = import.meta.env.VITE_APP_VERSION
+declare const __APP_VERSION__: string
+
+export const APP_VERSION: string = __APP_VERSION__

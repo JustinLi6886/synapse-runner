@@ -11,8 +11,9 @@ const pkg = JSON.parse(
 ) as { version: string }
 
 export default defineConfig({
+  // Use a dedicated global (not import.meta.env.*) so .env cannot override package.json version.
   define: {
-    'import.meta.env.VITE_APP_VERSION': JSON.stringify(pkg.version),
+    __APP_VERSION__: JSON.stringify(pkg.version),
   },
   plugins: [react(), tailwindcss()],
   resolve: {
