@@ -15,6 +15,10 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
+  build: {
+    // Downlevel syntax for last ~2 years of Chrome / Safari / Edge / Firefox (ES modules baseline).
+    target: ['es2020', 'chrome87', 'edge88', 'firefox78', 'safari14'],
+  },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { '@': path.resolve(__dirname, 'src') },

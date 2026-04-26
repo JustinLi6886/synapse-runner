@@ -8,6 +8,8 @@ import { usePolicyGradient } from "@/hooks/usePolicyGradient"
 import { useEvolution } from "@/hooks/useEvolution"
 import { getPersisted, schedulePersist, flushPersist } from "@/lib/app-persist"
 import { ToastViewport } from "@/components/toast-viewport"
+import { NarrowViewportGate } from "@/components/narrow-viewport-gate"
+import { useNarrowViewportBlocked } from "@/hooks/useNarrowViewportBlocked"
 import { sanitizeAppMode, sanitizeBool, sanitizeTheme, type AppMode } from "@/lib/sanitize"
 
 function animateLeftPanelScrollToBottom(el: HTMLElement, durationMs: number): () => void {
@@ -89,6 +91,8 @@ function App() {
       : activeMode === "evolution"
         ? !!evState.isEvaluating
         : false
+
+  const narrowViewportOpen = useNarrowViewportBlocked()
 
   const navFileActionsDisabled =
     (activeMode === "imitation" && (!!imitState.isTraining || !!imitState.isEvaluating)) ||
@@ -218,66 +222,72 @@ function App() {
   }, [])
 
   return (
-    <div className="flex h-screen flex-col bg-background text-foreground overflow-hidden">
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-2 focus:z-[200] focus:rounded-md focus:border focus:border-border focus:bg-card focus:px-3 focus:py-2 focus:text-sm focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
+    <>
+      <div
+        className="app-viewport flex min-h-0 flex-col overflow-hidden bg-background text-foreground"
+        inert={narrowViewportOpen ? true : undefined}
       >
-        Skip to main content
-      </a>
-      <TopNav
-        activeMode={activeMode}
-        theme={theme}
-        onThemeChange={setTheme}
-        fileActionsDisabled={navFileActionsDisabled}
-        leftPanelOpen={leftPanelOpen}
-        onLeftPanelToggle={() => setLeftPanelOpen(!leftPanelOpen)}
-        imitation={imitation}
-        policyGradient={policyGradient}
-        evolution={evolution}
-      />
-
-      <div className="flex flex-1 overflow-hidden">
-        <aside
-          ref={leftPanelScrollRef}
-          className={`shrink-0 overflow-y-auto border-r border-border transition-[width] duration-200 ease-in-out ${
-            leftPanelOpen ? "w-[min(420px,100vw)]" : "w-0"
-          }`}
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-2 focus:z-[200] focus:rounded-md focus:border focus:border-border focus:bg-card focus:px-3 focus:py-2 focus:text-sm focus:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
         >
-          <div className="w-full min-w-0 max-w-[420px] p-4">
-            <ControlPanel
+          Skip to main content
+        </a>
+        <TopNav
+          activeMode={activeMode}
+          theme={theme}
+          onThemeChange={setTheme}
+          fileActionsDisabled={navFileActionsDisabled}
+          leftPanelOpen={leftPanelOpen}
+          onLeftPanelToggle={() => setLeftPanelOpen(!leftPanelOpen)}
+          imitation={imitation}
+          policyGradient={policyGradient}
+          evolution={evolution}
+        />
+
+        <div className="flex flex-1 overflow-hidden">
+          <aside
+            ref={leftPanelScrollRef}
+            className={`shrink-0 overflow-y-auto border-r border-border transition-[width] duration-200 ease-in-out ${
+              leftPanelOpen ? "w-[min(420px,100vw)]" : "w-0"
+            }`}
+          >
+            <div className="w-full min-w-0 max-w-[420px] p-4">
+              <ControlPanel
+                activeMode={activeMode}
+                onModeChange={(mode) => setActiveMode(sanitizeAppMode(mode))}
+                modeLocked={modeLocked}
+                imitation={imitation}
+                policyGradient={policyGradient}
+                evolution={evolution}
+                isHeadless={isHeadlessForUi}
+                onHeadlessToggle={handleHeadlessToggle}
+                headlessToggleDisabled={headlessToggleDisabled}
+                onPolicyGradientEvaluate={() => {
+                  if (headlessPolicyGradient) setHeadlessPolicyGradient(false)
+                }}
+              />
+            </div>
+          </aside>
+
+          <main
+            id="main-content"
+            className="flex flex-1 flex-col min-h-0 min-w-0 overflow-y-auto p-4"
+            tabIndex={-1}
+          >
+            <GamePanel
               activeMode={activeMode}
-              onModeChange={(mode) => setActiveMode(sanitizeAppMode(mode))}
-              modeLocked={modeLocked}
+              isHeadless={isHeadlessForUi}
               imitation={imitation}
               policyGradient={policyGradient}
               evolution={evolution}
-              isHeadless={isHeadlessForUi}
-              onHeadlessToggle={handleHeadlessToggle}
-              headlessToggleDisabled={headlessToggleDisabled}
-              onPolicyGradientEvaluate={() => {
-                if (headlessPolicyGradient) setHeadlessPolicyGradient(false)
-              }}
             />
-          </div>
-        </aside>
-
-        <main
-          id="main-content"
-          className="flex flex-1 flex-col min-h-0 min-w-0 overflow-y-auto p-4"
-          tabIndex={-1}
-        >
-          <ToastViewport />
-          <GamePanel
-            activeMode={activeMode}
-            isHeadless={isHeadlessForUi}
-            imitation={imitation}
-            policyGradient={policyGradient}
-            evolution={evolution}
-          />
-        </main>
+          </main>
+        </div>
       </div>
-    </div>
+      <ToastViewport />
+      <NarrowViewportGate open={narrowViewportOpen} />
+    </>
   )
 }
 

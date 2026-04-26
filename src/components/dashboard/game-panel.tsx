@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from "react"
 import { Monitor } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn, eventTargetIsFormField } from "@/lib/utils"
 import { useGameRunner } from "@/hooks/useGameRunner"
 import { HumanController, ModelController, SamplingModelController } from "@/ai/controller"
 import { rolloutTemperedJumpProb, spreadEvalProbTowardHalf } from "@/ai/actorCritic"
@@ -335,6 +335,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
   useEffect(() => {
     if (activeMode !== "human") return
     const onKeyDown = (e: KeyboardEvent) => {
+      if (eventTargetIsFormField(e)) return
       if ((e.code === "Space" || e.code === "ArrowUp") && !e.repeat) {
         e.preventDefault()
         humanCtrl.setJumpPressed(true)
@@ -506,7 +507,8 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === "KeyD") setDebugHitboxes((prev) => !prev)
+      if (eventTargetIsFormField(e)) return
+      if (e.code === "KeyD" && activeMode === "human") setDebugHitboxes((prev) => !prev)
       if ((e.code === "Space" || e.code === "ArrowUp") && activeMode === "human" && !e.repeat) {
         e.preventDefault()
         if (!gameStarted) {

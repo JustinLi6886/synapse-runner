@@ -14,7 +14,7 @@ class AppErrorBoundary extends Component<{ children: React.ReactNode }, { hasErr
   render() {
     if (this.state.hasError && this.state.error) {
       return (
-        <div className="min-h-screen bg-background p-6 font-sans text-foreground">
+        <div className="app-viewport p-6 font-sans text-foreground">
           <h1 className="text-xl font-semibold text-destructive">Something went wrong</h1>
           <pre className="mt-4 overflow-auto text-sm">{this.state.error.message}</pre>
           <pre className="mt-2 overflow-auto text-xs opacity-80">{this.state.error.stack}</pre>

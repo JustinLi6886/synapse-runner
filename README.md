@@ -6,7 +6,7 @@
 
 *Screenshot: **Imitation learning** — record demos, train behavioral cloning, inspect metrics.*
 
-**Live:** [synapserunner.com](https://www.synapserunner.com/) · **Repo:** [github.com/JustinLi6886/synapse-runner](https://github.com/JustinLi6886/synapse-runner) · **Current release:** `v2.2.0`
+**Live:** [synapserunner.com](https://www.synapserunner.com/) · **Repo:** [github.com/JustinLi6886/synapse-runner](https://github.com/JustinLi6886/synapse-runner) · **Current release:** `v2.3.0`
 
 A browser runner where the point isn’t flashy graphics—it’s an end-to-end **play → observe → train** loop in TypeScript. One game engine drives human control, recorded demos, and learning, all without a backend for the core experience.
 

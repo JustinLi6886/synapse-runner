@@ -2,6 +2,8 @@ import { useRef } from "react"
 import { Download, Github, Upload, Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { APP_VERSION } from "@/version"
+import { toast } from "@/lib/toast"
+import { MAX_FILE_READ_BYTES } from "@/lib/sanitize"
 import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
 import type { PolicyGradientState, PolicyGradientActions } from "@/hooks/usePolicyGradient"
 import type { EvolutionState, EvolutionActions } from "@/hooks/useEvolution"
@@ -143,7 +145,15 @@ export function TopNav({
                 accept=".json"
                 onChange={(e) => {
                   const file = e.target.files?.[0]
-                  if (file) void file.text().then(imitActions!.importModel).catch(() => {})
+                  if (file) {
+                    if (file.size > MAX_FILE_READ_BYTES) {
+                      toast.error("File is too large to import here")
+                    } else {
+                      void file.text().then(imitActions!.importModel).catch(() => {
+                        toast.error("Could not read that file")
+                      })
+                    }
+                  }
                   e.target.value = ""
                 }}
                 className="hidden"
@@ -186,7 +196,15 @@ export function TopNav({
                 accept=".json"
                 onChange={(e) => {
                   const file = e.target.files?.[0]
-                  if (file) void file.text().then(pgActions!.importModel).catch(() => {})
+                  if (file) {
+                    if (file.size > MAX_FILE_READ_BYTES) {
+                      toast.error("File is too large to import here")
+                    } else {
+                      void file.text().then(pgActions!.importModel).catch(() => {
+                        toast.error("Could not read that file")
+                      })
+                    }
+                  }
                   e.target.value = ""
                 }}
                 className="hidden"
@@ -229,7 +247,15 @@ export function TopNav({
                 accept=".json"
                 onChange={(e) => {
                   const file = e.target.files?.[0]
-                  if (file) void file.text().then(evActions!.importModel).catch(() => {})
+                  if (file) {
+                    if (file.size > MAX_FILE_READ_BYTES) {
+                      toast.error("File is too large to import here")
+                    } else {
+                      void file.text().then(evActions!.importModel).catch(() => {
+                        toast.error("Could not read that file")
+                      })
+                    }
+                  }
                   e.target.value = ""
                 }}
                 className="hidden"

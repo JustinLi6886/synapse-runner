@@ -129,8 +129,36 @@ html.dark {
   * {
     @apply border-border outline-ring/50;
   }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
   body {
     @apply font-sans antialiased bg-background text-foreground;
+    text-size-adjust: 100%;
+    touch-action: manipulation;
+  }
+  /* 100vh then 100dvh: mobile dynamic toolbar (Safari, Chrome) without breaking older engines. */
+  .app-viewport {
+    min-height: 100vh;
+    min-height: 100dvh;
+    height: 100vh;
+    height: 100dvh;
+  }
+  /* iOS: focused inputs with font-size < 16px force page zoom. */
+  @media (max-width: 64rem) {
+    input:not([type="file"]):not([type="hidden"]),
+    select,
+    textarea {
+      font-size: 1rem !important;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-walk-left,
+    .animate-walk-right,
+    .animate-arm-left,
+    .animate-arm-right {
+      animation: none;
+    }
   }
 }
 

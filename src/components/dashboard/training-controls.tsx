@@ -5,7 +5,8 @@ import type { ImitationState, ImitationActions } from "@/hooks/useImitation"
 import type { PolicyGradientState, PolicyGradientActions } from "@/hooks/usePolicyGradient"
 import { PG_DEFAULTS } from "@/lib/pg-defaults"
 import { EVOLUTION_MAX_SCORE, type EvolutionState, type EvolutionActions } from "@/hooks/useEvolution"
-import { parseNumberInput } from "@/lib/sanitize"
+import { parseNumberInput, MAX_FILE_READ_BYTES } from "@/lib/sanitize"
+import { toast } from "@/lib/toast"
 
 interface TrainingControlsProps {
   activeMode: string
@@ -242,13 +243,21 @@ function ImitationControls({ imitation }: { imitation?: [ImitationState, Imitati
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    if (file.size > MAX_FILE_READ_BYTES) {
+      toast.error("File is too large to import here")
+      if (fileInputRef.current) fileInputRef.current.value = ""
+      return
+    }
     void file
       .text()
       .then((json) => {
         actions.importDataset(json)
         if (fileInputRef.current) fileInputRef.current.value = ""
       })
-      .catch(() => {})
+      .catch(() => {
+        toast.error("Could not read that file")
+        if (fileInputRef.current) fileInputRef.current.value = ""
+      })
   }
 
   return (

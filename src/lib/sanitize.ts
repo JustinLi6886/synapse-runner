@@ -1,6 +1,8 @@
 import { PG_DEFAULTS } from "@/lib/pg-defaults"
 
 const MAX_JSON_IMPORT_CHARS = 12_000_000
+/** Reject in the `change` handler so we do not read huge files into a string (pathological JSON / OOM). */
+export const MAX_FILE_READ_BYTES = 32_000_000
 export const MAX_DATASET_SAMPLES = 200_000
 export const MAX_OBS_COMPONENTS = 32
 export const MAX_HISTORY_POINTS = 10_000
