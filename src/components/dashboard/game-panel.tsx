@@ -528,6 +528,30 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runner object identity changes every frame
   }, [activeMode, gameStarted, runner.gameOver, runner.reset])
 
+  const onHumanScenePointerDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (!isHuman) return
+      if (e.button !== 0) return
+      if ((e.target as Element).closest("button, a, input, textarea, select, [data-no-scene-tap]")) return
+      if (eventTargetIsFormField(e)) return
+      e.preventDefault()
+      if (!gameStarted) {
+        setGameStarted(true)
+        setRunCount((c) => c + 1)
+      } else if (runner.gameOver) {
+        runner.reset()
+        setGameStarted(true)
+        setRunCount((c) => c + 1)
+        runStartTimeRef.current = Date.now()
+        setRunDurationSeconds(0)
+      } else {
+        humanCtrl.setJumpPressed(true)
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runner object identity changes every frame
+    [isHuman, gameStarted, runner.gameOver, humanCtrl, runner.reset],
+  )
+
   useEffect(() => {
     if (!isHuman || !gameStarted || runner.gameOver) return
     const id = setInterval(() => {
@@ -589,7 +613,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
       <div
         className="relative flex-1 min-h-[200px] rounded-xl border border-border bg-card overflow-hidden"
         role="img"
-        aria-label="Runner game view"
+        aria-label="Runner view. In Human mode, tap the play area on a phone or tablet, or use Space. Other modes: models play automatically or from controls."
       >
         {isEvolutionArena ? (
           <EvolutionArena
@@ -660,7 +684,11 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
           <div className="flex h-full flex-col items-center justify-center">
             <div
               ref={isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution" ? sceneRef : undefined}
-              className="relative flex h-full w-full items-end bg-game-scene"
+              className={cn(
+                "relative flex h-full w-full items-end bg-game-scene",
+                isHuman ? "touch-none" : "touch-manipulation",
+              )}
+              onPointerDown={isHuman ? onHumanScenePointerDown : undefined}
             >
               <div className="absolute bottom-12 left-0 right-0 h-[0.5px] bg-game-line" />
               <div className="absolute bottom-0 left-0 right-0 h-12 border-t-[0.5px] border-game-line/55" />
@@ -856,15 +884,15 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
 
               {isHuman && runner.state && !gameStarted && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                  <span className="text-xs text-muted-foreground">
-                    Press{" "}
-                    <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">Space</kbd>
-                    {" / "}
-                    <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">↑</kbd>
-                    {" or tap Start"}
+                  <span className="text-xs text-muted-foreground text-center max-w-sm px-2">
+                    Tap the game, press{" "}
+                    <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">Space</kbd>{" "}
+                    or <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">↑</kbd>, or
+                    use Start
                   </span>
                   <button
                     type="button"
+                    data-no-scene-tap
                     onClick={() => {
                       setGameStarted(true)
                       setRunCount((c) => c + 1)
@@ -915,6 +943,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                   </span>
                   <button
                     type="button"
+                    data-no-scene-tap
                     onClick={() => {
                       runner.reset()
                       setGameStarted(true)
@@ -929,8 +958,8 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
                   >
                     Reset
                   </button>
-                  <span className="text-xs text-muted-foreground">
-                    or press{" "}
+                  <span className="text-xs text-muted-foreground text-center max-w-sm px-2">
+                    or tap the game, or press{" "}
                     <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">Space</kbd>
                     {" / "}
                     <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">↑</kbd>
