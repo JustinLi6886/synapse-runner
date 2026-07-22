@@ -422,22 +422,44 @@ export class NeuralNetwork {
   }
 
   loadWeights(weights: number[][][], biases: number[][]): void {
-    if (
-      weights.length !== this.weights.length ||
-      biases.length !== this.biases.length
-    )
+    if (!Array.isArray(weights) || !Array.isArray(biases)) {
       throw new Error("Weight/biases shape mismatch")
+    }
+    if (weights.length !== this.weights.length || biases.length !== this.biases.length) {
+      throw new Error("Weight/biases shape mismatch")
+    }
     for (let l = 0; l < weights.length; l++) {
+      const expectedRows = this.layers[l + 1]
+      const expectedColumns = this.layers[l]
+      if (
+        !Array.isArray(weights[l]) ||
+        weights[l].length !== expectedRows ||
+        !Array.isArray(biases[l]) ||
+        biases[l].length !== expectedRows
+      ) {
+        throw new Error("Weight/biases shape mismatch")
+      }
       for (let i = 0; i < weights[l].length; i++) {
+        if (!Array.isArray(weights[l][i]) || weights[l][i].length !== expectedColumns) {
+          throw new Error("Weight/biases shape mismatch")
+        }
         for (let j = 0; j < weights[l][i].length; j++) {
-          this.weights[l][i][j] = weights[l][i][j]
+          const value = weights[l][i][j]
+          if (typeof value !== "number" || !Number.isFinite(value)) {
+            throw new Error("Weights and biases must contain finite numbers")
+          }
         }
       }
       for (let i = 0; i < biases[l].length; i++) {
-        this.biases[l][i] = biases[l][i]
+        const value = biases[l][i]
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          throw new Error("Weights and biases must contain finite numbers")
+        }
       }
     }
-    this.repairNonFiniteParameters()
+    this.weights = weights.map((layer) => layer.map((row) => [...row]))
+    this.biases = biases.map((layer) => [...layer])
+    this._inferBufs = null
   }
 
   static fromWeights(json: string): NeuralNetwork {

@@ -883,8 +883,8 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
               </div>
 
               {isHuman && runner.state && !gameStarted && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
-                  <span className="text-xs text-muted-foreground text-center max-w-sm px-2">
+                <div className="runner-start-prompt absolute inset-0 flex flex-col items-center justify-center gap-3">
+                  <span className="runner-start-prompt-copy text-xs text-muted-foreground text-center max-w-sm px-2">
                     Tap the game, press{" "}
                     <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">Space</kbd>{" "}
                     or <kbd className="rounded border border-border bg-card px-1.5 py-0.5 font-mono text-[11px]">↑</kbd>, or
@@ -1038,7 +1038,7 @@ export function GamePanel({ activeMode, isHeadless, imitation, policyGradient, e
         className={cn(
           "shrink-0",
           (isHuman || activeMode === "imitation" || activeMode === "policy-gradient" || activeMode === "evolution") &&
-            (showObservationInspector ? "grid grid-cols-[2fr_3fr] gap-4" : "grid grid-cols-1 gap-4"),
+            (showObservationInspector ? "grid grid-cols-[2fr_3fr] gap-4 max-[900px]:grid-cols-1" : "grid grid-cols-1 gap-4"),
         )}
       >
         {isHuman && (

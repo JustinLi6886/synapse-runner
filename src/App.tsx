@@ -249,7 +249,7 @@ function App() {
           <aside
             ref={leftPanelScrollRef}
             className={`shrink-0 overflow-y-auto border-r border-border transition-[width] duration-200 ease-in-out ${
-              leftPanelOpen ? "w-[min(420px,100vw)]" : "w-0"
+              leftPanelOpen ? "w-[min(420px,40vw)]" : "w-0"
             }`}
           >
             <div className="w-full min-w-0 max-w-[420px] p-4">

@@ -97,7 +97,7 @@ export function TopNav({
             target="_blank"
             rel="noopener noreferrer"
             className={cn(
-              "text-[11px] font-medium text-muted-foreground whitespace-nowrap select-none transition-colors",
+              "text-[11px] font-medium text-muted-foreground whitespace-nowrap select-none transition-colors max-[900px]:hidden",
               "hover:text-foreground hover:underline underline-offset-2",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:rounded-sm",
             )}
