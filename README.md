@@ -6,24 +6,24 @@
 
 **Live app:** [synapserunner.com](https://www.synapserunner.com/) · **Current release:** `v2.3.2` · **Source:** [github.com/JustinLi6886/synapse-runner](https://github.com/JustinLi6886/synapse-runner)
 
-Synapse Runner is a browser-based neural-network learning playground. One seeded side-scroller simulation supports human play, behavioral cloning from recorded demonstrations, actor–critic policy gradients, and mutation-only neuroevolution. The core neural-network math and learning updates are implemented directly in TypeScript; React, Tailwind CSS, Recharts, and the libraries listed in `package.json` provide the interface and supporting utilities.
+Synapse Runner is an interactive, browser-based machine-learning playground that makes neural-network training observable through a seeded side-scroller simulation. Players can control the game directly, record demonstrations for behavioral cloning, train an actor-critic policy with generalized advantage estimation, or evolve policies through mutation and selection. The neural-network math and learning updates are implemented directly in TypeScript, with React, Tailwind CSS, Recharts, and supporting libraries powering the interface.
 
-## What you can inspect
+## Learning Modes
 
-| Mode | Public behavior |
+| Mode | Experience |
 |---|---|
 | **Human** | Play with the keyboard or pointer/touch and optionally record demonstrations. |
 | **Imitation** | Train a behavioral-cloning model from recorded observations and actions. |
 | **Policy gradient** | Run actor–critic updates with GAE-style advantages and inspect training/evaluation metrics. |
 | **Evolution** | Evaluate populations, retain elites, and create mutated offspring over successive generations. |
 
-## Architecture
+## Engineering Highlights
 
-- A deterministic game engine owns movement, obstacle generation, collision checks, rewards, and the seven-value observation vector.
-- A `7-32-16-1` feedforward network provides forward propagation, Leaky ReLU/sigmoid activations, BCE/MSE training, policy-gradient updates, and gradient clipping without an ML framework.
-- React separates the interactive dashboard from ref-backed simulation state; optional headless training hides rendering but still runs on the browser's main thread.
-- Versioned `localStorage` persistence retains settings, datasets, models, and training progress. Imports are size-limited, sanitized, and shape-validated.
-- The app is client-only: there is no backend, database, Web Worker, Canvas, or WebGL renderer.
+- A deterministic game engine manages movement, obstacle generation, collision checks, rewards, and a seven-value observation vector.
+- A `7-32-16-1` feedforward network implements forward propagation, Leaky ReLU/sigmoid activations, BCE/MSE training, actor-critic updates, and gradient clipping without an ML framework.
+- React separates the interactive dashboard from ref-backed simulation state, supporting optional headless training for faster experimentation.
+- Versioned `localStorage` persistence retains settings, datasets, models, and training progress; imports are size-limited, sanitized, and shape-validated.
+- The application runs entirely in the browser, with no backend or database dependency.
 
 ## Stack
 
@@ -55,12 +55,11 @@ npm run preview
 
 CI runs the clean install, lint, focused correctness tests, and production build on every push and pull request to `main`.
 
-## Current boundaries
+## Product Notes
 
-- The dashboard is supported at widths of `720` CSS pixels and above. Narrower portrait-phone views show a rotate-or-use-a-larger-screen message; the project does not claim full portrait-phone responsiveness.
-- Learning quality depends on demonstrations, settings, seeds, and training duration. This repository does not publish benchmark, convergence, score, generalization, usage, or performance claims.
-- Imitation metrics describe the recorded dataset used by the in-browser trainer; they are not held-out research results.
-- Headless mode reduces rendering work but is not worker-thread or server-side training.
+- The dashboard is designed for screens `720` CSS pixels wide and above; narrower portrait-phone views prompt users to rotate or use a larger screen.
+- Learning results vary with demonstrations, settings, seeds, and training duration. Metrics are designed for interactive exploration rather than benchmark reporting.
+- Headless mode reduces rendering work while training remains in the browser's main thread.
 
 ## Ownership and license
 
